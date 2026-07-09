@@ -1,23 +1,34 @@
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, ArrowRight, RefreshCw, ChevronDown, ChevronRight, ArrowUp, ArrowDown } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Trash2
+} from 'lucide-react'
 import { get, post, put, del } from '../lib/api'
 
-// Claude Office 客户端仅识别含 sonnet / opus / haiku 的模型 ID
 const CLIENT_MODELS = [
   { id: 'claude-sonnet-4-5-20250929', label: 'Sonnet' },
-  { id: 'claude-opus-4-5-20250929', label: 'Opus' },
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku' },
+  { id: 'claude-opus-4-5-20250929', label: 'Opus' },
 ]
 const GROUP_ORDER = ['sonnet', 'haiku', 'opus']
+
 const familyOf = (clientModel = '') => {
-  const m = String(clientModel).toLowerCase()
-  if (m.includes('sonnet')) return 'sonnet'
-  if (m.includes('haiku')) return 'haiku'
-  if (m.includes('opus')) return 'opus'
+  const model = String(clientModel).toLowerCase()
+  if (model.includes('sonnet')) return 'sonnet'
+  if (model.includes('haiku')) return 'haiku'
+  if (model.includes('opus')) return 'opus'
   return 'other'
 }
-const labelOf = (fam) => CLIENT_MODELS.find((c) => c.id.includes(fam))?.label || fam
+
+const modelForFamily = (family) => CLIENT_MODELS.find((model) => model.id.includes(family)) || CLIENT_MODELS[0]
 
 export default function Mappings() {
   const qc = useQueryClient()
@@ -25,13 +36,15 @@ export default function Mappings() {
   const { data: provs } = useQuery({ queryKey: ['providers'], queryFn: () => get('/admin/providers') })
   const [open, setOpen] = useState(false)
   const [collapsed, setCollapsed] = useState({})
-  const [form, setForm] = useState({ id: null, provider_id: 0, client_model: '', upstream_model: '' })
+  const [form, setForm] = useState({ id: null, provider_id: 0, client_model: CLIENT_MODELS[0].id, upstream_model: '' })
   const [err, setErr] = useState(null)
   const [models, setModels] = useState(null)
   const [loadingModels, setLoadingModels] = useState(false)
 
+  const providers = provs?.data || []
+
   const saveM = useMutation({
-    mutationFn: (d) => (d.id ? put(`/admin/mappings/${d.id}`, d) : post('/admin/mappings', d)),
+    mutationFn: (payload) => (payload.id ? put(`/admin/mappings/${payload.id}`, payload) : post('/admin/mappings', payload)),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mappings'] })
       setOpen(false)
@@ -46,7 +59,6 @@ export default function Mappings() {
     mutationFn: ({ id, enabled }) => put(`/admin/mappings/${id}`, { enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mappings'] })
   })
-  // 调整顺序：对调两个相邻行的 priority
   const swapM = useMutation({
     mutationFn: async ({ a, b }) => {
       await put(`/admin/mappings/${a.id}`, { priority: b.priority })
@@ -56,326 +68,366 @@ export default function Mappings() {
   })
 
   const groups = useMemo(() => {
-    const out = {}
-    for (const fam of GROUP_ORDER) out[fam] = []
-    out.other = []
-    for (const m of data?.data || []) {
-      const fam = familyOf(m.client_model)
-      ;(out[fam] || out.other).push(m)
+    const output = Object.fromEntries(GROUP_ORDER.map((family) => [family, []]))
+    for (const mapping of data?.data || []) {
+      const family = familyOf(mapping.client_model)
+      if (output[family]) output[family].push(mapping)
     }
-    for (const fam of GROUP_ORDER) {
-      out[fam].sort((a, b) => (a.priority - b.priority) || (a.id - b.id))
+    for (const family of GROUP_ORDER) {
+      output[family].sort((a, b) => (a.priority - b.priority) || (a.id - b.id))
     }
-    return out
+    return output
   }, [data])
 
-  const startNew = (presetClientModel) => {
+  const fetchModels = async (providerId) => {
+    if (!providerId) return
+    setLoadingModels(true)
+    setModels(null)
+    try {
+      const result = await get(`/admin/providers/${providerId}/models`)
+      setModels(result)
+    } catch (e) {
+      setModels({ ok: false, error: e.message, models: [] })
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  const startNew = (clientModel = CLIENT_MODELS[0].id) => {
+    const providerId = providers[0]?.id || 0
+    setForm({ id: null, provider_id: providerId, client_model: clientModel, upstream_model: '' })
+    setErr(null)
+    setModels(null)
+    setOpen(true)
+    if (providerId) fetchModels(providerId)
+  }
+
+  const startEdit = (mapping) => {
     setForm({
-      id: null,
-      provider_id: (provs?.data || [])[0]?.id || 0,
-      client_model: presetClientModel || CLIENT_MODELS[0].id,
-      upstream_model: ''
+      id: mapping.id,
+      provider_id: mapping.provider_id,
+      client_model: mapping.client_model,
+      upstream_model: mapping.upstream_model
     })
     setErr(null)
     setModels(null)
     setOpen(true)
-    if ((provs?.data || [])[0]?.id) fetchModels((provs?.data || [])[0].id)
+    fetchModels(mapping.provider_id)
   }
 
-  const startEdit = (m) => {
-    setForm({ id: m.id, provider_id: m.provider_id, client_model: m.client_model, upstream_model: m.upstream_model })
-    setErr(null)
-    setModels(null)
-    setOpen(true)
-    fetchModels(m.provider_id)
-  }
-
-  const fetchModels = async (pid) => {
-    if (!pid) return
-    setLoadingModels(true)
-    setModels(null)
-    try {
-      const r = await get(`/admin/providers/${pid}/models`)
-      setModels(r)
-    } catch (e) {
-      setModels({ ok: false, error: e.message, models: [] })
-    }
-    setLoadingModels(false)
-  }
-
-  const onProviderChange = (pid) => {
-    setForm({ ...form, provider_id: pid })
-    setModels(null)
-    fetchModels(pid)
-  }
-
-  const moveRow = (rows, idx, dir) => {
-    const j = idx + dir
-    if (j < 0 || j >= rows.length) return
-    const a = rows[idx], b = rows[j]
-    // 同一 priority 的情况：把 b 的 priority 设为 a 的 +1 后再调
-    if (a.priority === b.priority) {
-      swapM.mutate({ a: { ...a, priority: a.priority + 1 }, b })
-    } else {
-      swapM.mutate({ a, b })
-    }
+  const moveRow = (rows, index, dir) => {
+    const nextIndex = index + dir
+    if (nextIndex < 0 || nextIndex >= rows.length) return
+    const a = rows[index]
+    const b = rows[nextIndex]
+    swapM.mutate({ a, b })
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold">模型映射</h1>
-          <p className="text-[13px] text-text-muted mt-1">
-            客户端模型 → 上游模型路由；同组内按顺序自动故障转移
-          </p>
-        </div>
+    <div className="mx-auto max-w-7xl space-y-6">
+      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+        <PageHeader
+          eyebrow="Routing"
+          title="模型映射"
+          desc="把 Claude Office 客户端 model 映射到 upstream model，同组内按顺序 fallback。"
+        />
         <button
           onClick={() => startNew()}
-          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-fg rounded-lg text-sm font-medium"
+          disabled={providers.length === 0}
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-black px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Plus size={14} />新增映射
+          <Plus size={16} />
+          新增映射
         </button>
       </div>
 
-      {GROUP_ORDER.map((fam) => {
-        const rows = groups[fam]
-        const isOpen = !collapsed[fam]
-        const enabledCount = rows.filter((r) => r.enabled).length
-        return (
-          <div key={fam} className="rounded-xl bg-bg-card border border-border overflow-hidden">
-            <button
-              onClick={() => setCollapsed((c) => ({ ...c, [fam]: isOpen }))}
-              className="w-full flex items-center justify-between px-5 py-3.5 bg-bg-elevated hover:bg-bg transition-colors"
-            >
-              <div className="flex items-center gap-2.5">
-                {isOpen ? <ChevronDown size={16} className="text-text-secondary" /> : <ChevronRight size={16} className="text-text-secondary" />}
-                <span className="text-[14px] font-semibold">{labelOf(fam)}</span>
-                <span className="text-[11px] text-text-muted font-mono">
-                  {rows[0]?.client_model || '（无）'}
-                </span>
-                <span className="text-[11px] text-text-muted">
-                  · {rows.length} 个候选 {enabledCount < rows.length && <span className="text-warning">（{rows.length - enabledCount} 停用）</span>}
-                </span>
-              </div>
-              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                <button
-                  onClick={() => startNew(CLIENT_MODELS.find((c) => c.id.includes(fam))?.id)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-primary hover:bg-bg"
-                >
-                  <Plus size={11} />添加到本组
-                </button>
-              </div>
-            </button>
+      {providers.length === 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          需要先配置至少一个 Provider，才能新增模型映射。
+        </div>
+      )}
 
-            {isOpen && (
-              <>
-                <div className="flex items-center px-5 py-2.5 text-[10px] font-semibold text-text-muted border-t border-border">
-                  <div className="w-[40px]">顺序</div>
-                  <div className="w-[140px]">提供商</div>
-                  <div className="flex-1">上游模型</div>
-                  <div className="w-20">启用</div>
-                  <div className="w-[140px] text-right pr-2">操作</div>
-                </div>
-                {rows.length === 0 && (
-                  <div className="px-5 py-6 text-center text-[12px] text-text-muted border-t border-border">
-                    暂无候选，点击右上「添加到本组」配置上游
+      <div className="space-y-4">
+        {GROUP_ORDER.map((family) => {
+          const rows = groups[family]
+          const isOpen = !collapsed[family]
+          const clientModel = modelForFamily(family)
+          return (
+            <div key={family} className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+              <button
+                onClick={() => setCollapsed((prev) => ({ ...prev, [family]: isOpen }))}
+                className="flex w-full cursor-pointer items-center justify-between gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4 text-left transition-colors hover:bg-slate-100"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  {isOpen ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronRight size={16} className="text-slate-500" />}
+                  <div>
+                    <div className="font-semibold text-slate-950">{clientModel.label}</div>
+                    <div className="mt-1 truncate font-mono text-xs text-slate-500">{clientModel.id}</div>
                   </div>
-                )}
-                {rows.map((m, idx) => (
-                  <div key={m.id} className="flex items-center px-5 py-3 border-t border-border text-sm">
-                    <div className="w-[40px] flex flex-col gap-0.5">
-                      <button
-                        onClick={() => moveRow(rows, idx, -1)}
-                        disabled={idx === 0}
-                        className="p-0.5 text-text-muted hover:text-primary disabled:opacity-30"
-                        title="上移（提高优先级）"
-                      >
-                        <ArrowUp size={12} />
-                      </button>
-                      <button
-                        onClick={() => moveRow(rows, idx, 1)}
-                        disabled={idx === rows.length - 1}
-                        className="p-0.5 text-text-muted hover:text-primary disabled:opacity-30"
-                        title="下移（降低优先级）"
-                      >
-                        <ArrowDown size={12} />
-                      </button>
-                    </div>
-                    <div className="w-[140px] flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${m.enabled ? 'bg-success' : 'bg-text-tertiary'}`} />
-                      <span className="text-[12px] truncate">{m.provider_name}</span>
-                    </div>
-                    <div className="flex-1 flex items-center gap-1.5 min-w-0">
-                      <span className="text-[10px] text-text-tertiary font-mono w-[28px] shrink-0">#{idx + 1}</span>
-                      <ArrowRight size={11} className="text-text-tertiary shrink-0" />
-                      <span className="font-mono text-[12px] text-text-primary truncate">{m.upstream_model}</span>
-                    </div>
-                    <div className="w-20">
-                      <button
-                        onClick={() => toggleM.mutate({ id: m.id, enabled: !m.enabled })}
-                        className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
-                          m.enabled
-                            ? 'text-success border-success/30 bg-success/10'
-                            : 'text-text-muted border-border bg-bg-elevated'
-                        }`}
-                        title={m.enabled ? '点击停用' : '点击启用'}
-                      >
-                        {m.enabled ? '已启用' : '已停用'}
-                      </button>
-                    </div>
-                    <div className="w-[140px] flex gap-1.5 justify-end">
-                      <button
-                        onClick={() => startEdit(m)}
-                        className="p-1.5 bg-bg-elevated border border-border rounded-md"
-                        title="编辑"
-                      >
-                        <Pencil size={12} className="text-text-secondary" />
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (confirm('删除该候选？')) delM.mutate(m.id)
-                        }}
-                        className="p-1.5 bg-bg-elevated border border-border rounded-md"
-                        title="删除"
-                      >
-                        <Trash2 size={12} className="text-danger" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        )
-      })}
-
-      {open && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setOpen(false)}>
-          <div
-            className="w-[560px] bg-bg-card border border-border rounded-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-6 py-5 border-b border-border">
-              <h2 className="text-lg font-semibold">{form.id ? '编辑映射' : '新增映射'}</h2>
-              <p className="text-[11px] text-text-muted mt-1">
-                新增的候选将追加到该客户端模型组队尾
-              </p>
-            </div>
-            <div className="px-6 py-5 space-y-4">
-              <div>
-                <div className="text-[12px] text-text-secondary mb-1.5">客户端模型（Claude Office 仅识别以下三种）</div>
-                <div className="flex gap-2">
-                  {CLIENT_MODELS.map((m) => {
-                    const active = form.client_model === m.id
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setForm({ ...form, client_model: m.id })}
-                        className={`flex-1 px-3 py-2.5 rounded-lg border text-left ${
-                          active ? 'bg-bg-elevated border-primary' : 'bg-bg border-border hover:border-border'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-[13px] font-semibold">{m.label}</span>
-                          <span
-                            className={`w-4 h-4 rounded-full flex items-center justify-center border ${
-                              active ? 'bg-primary border-primary' : 'border-text-tertiary'
-                            }`}
-                          >
-                            {active && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                          </span>
-                        </div>
-                        <div className="font-mono text-[10px] text-text-muted mt-0.5 truncate">{m.id}</div>
-                      </button>
-                    )
-                  })}
                 </div>
-              </div>
-              <div>
-                <div className="text-[12px] text-text-secondary mb-1.5">提供商</div>
-                <select
-                  value={form.provider_id}
-                  onChange={(e) => onProviderChange(+e.target.value)}
-                  className="w-full px-3 py-2.5 bg-bg border border-border rounded-lg text-sm text-text-primary"
-                >
-                  {(provs?.data || []).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-[12px] text-text-secondary">上游模型</div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-500">
+                    {rows.length} 条候选
+                  </span>
                   <button
                     type="button"
-                    onClick={() => fetchModels(form.provider_id)}
-                    disabled={loadingModels || !form.provider_id}
-                    className="flex items-center gap-1 text-[11px] text-primary hover:opacity-80 disabled:opacity-40"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      startNew(clientModel.id)
+                    }}
+                    disabled={providers.length === 0}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-blue-200 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <RefreshCw size={11} className={loadingModels ? 'animate-spin' : ''} />
-                    {loadingModels ? '获取中' : '刷新上游模型'}
+                    <Plus size={13} />
+                    添加
                   </button>
                 </div>
-                <input
-                  value={form.upstream_model}
-                  onChange={(e) => setForm({ ...form, upstream_model: e.target.value })}
-                  placeholder="deepseek-chat"
-                  className="w-full px-3 py-2.5 bg-bg border border-border rounded-lg text-sm font-mono text-text-primary"
-                />
-                <div className="mt-2">
-                  {models
-                    ? models.ok
-                      ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {models.models.length === 0 && (
-                            <span className="text-[11px] text-text-muted">上游返回 0 个模型，请手填</span>
-                          )}
-                          {models.models.map((mid) => {
-                            const active = form.upstream_model === mid
-                            return (
-                              <button
-                                key={mid}
-                                type="button"
-                                onClick={() => setForm({ ...form, upstream_model: mid })}
-                                className={`px-2.5 py-1 rounded-md border font-mono text-[11px] ${
-                                  active
-                                    ? 'bg-primary text-primary-fg border-primary'
-                                    : 'bg-bg-elevated text-text-secondary border-border hover:border-primary'
-                                }`}
-                              >
-                                {mid}
-                              </button>
-                            )
-                          })}
+              </button>
+
+              {isOpen && (
+                <>
+                  <div className="hidden overflow-x-auto md:block">
+                    <div className="min-w-[760px]">
+                      <div className="grid grid-cols-[60px_160px_minmax(260px,1fr)_110px_130px] gap-4 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                        <div>顺序</div>
+                        <div>Provider</div>
+                        <div>upstream model</div>
+                        <div>状态</div>
+                        <div className="text-right">操作</div>
+                      </div>
+                      {rows.length === 0 && <div className="border-t border-slate-200 px-5 py-8 text-center text-sm text-slate-500">暂无候选映射</div>}
+                      {rows.map((mapping, index) => (
+                        <div key={mapping.id} className="grid grid-cols-[60px_160px_minmax(260px,1fr)_110px_130px] items-center gap-4 border-t border-slate-200 px-5 py-3 text-sm">
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => moveRow(rows, index, -1)} disabled={index === 0} className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-950 disabled:opacity-30" title="上移">
+                              <ArrowUp size={14} />
+                            </button>
+                            <button onClick={() => moveRow(rows, index, 1)} disabled={index === rows.length - 1} className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-950 disabled:opacity-30" title="下移">
+                              <ArrowDown size={14} />
+                            </button>
+                          </div>
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className={mapping.enabled ? 'h-2 w-2 rounded-full bg-emerald-500' : 'h-2 w-2 rounded-full bg-slate-300'} />
+                            <span className="truncate text-slate-950">{mapping.provider_name}</span>
+                          </div>
+                          <div className="flex min-w-0 items-center gap-2 font-mono text-xs text-slate-600">
+                            <span className="shrink-0 text-slate-400">#{index + 1}</span>
+                            <ArrowRight size={13} className="shrink-0 text-slate-400" />
+                            <span className="truncate">{mapping.upstream_model}</span>
+                          </div>
+                          <StatusToggle mapping={mapping} toggleM={toggleM} />
+                          <div className="flex justify-end gap-1.5">
+                            <IconButton title="编辑" onClick={() => startEdit(mapping)} icon={Pencil} />
+                            <IconButton
+                              title="删除"
+                              danger
+                              onClick={() => {
+                                if (confirm('删除该映射候选？')) delM.mutate(mapping.id)
+                              }}
+                              icon={Trash2}
+                            />
+                          </div>
                         </div>
-                      )
-                      : <span className="text-[11px] text-danger">获取失败：{models.error}（可手填）</span>
-                    : loadingModels
-                      ? <span className="text-[11px] text-text-muted">正在拉取上游模型…</span>
-                      : null}
-                </div>
-              </div>
-              {err && <div className="text-[12px] text-danger">{err}</div>}
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 p-4 md:hidden">
+                    {rows.length === 0 && <div className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">暂无候选映射</div>}
+                    {rows.map((mapping, index) => (
+                      <div key={mapping.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={mapping.enabled ? 'h-2 w-2 rounded-full bg-emerald-500' : 'h-2 w-2 rounded-full bg-slate-300'} />
+                              <span className="truncate font-medium text-slate-950">{mapping.provider_name}</span>
+                            </div>
+                            <div className="mt-2 truncate font-mono text-xs text-slate-600">{mapping.upstream_model}</div>
+                          </div>
+                          <StatusToggle mapping={mapping} toggleM={toggleM} />
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => moveRow(rows, index, -1)} disabled={index === 0} className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30" title="上移">
+                              <ArrowUp size={14} />
+                            </button>
+                            <button onClick={() => moveRow(rows, index, 1)} disabled={index === rows.length - 1} className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30" title="下移">
+                              <ArrowDown size={14} />
+                            </button>
+                            <span className="ml-1 font-mono text-xs text-slate-500">#{index + 1}</span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <IconButton title="编辑" onClick={() => startEdit(mapping)} icon={Pencil} />
+                            <IconButton title="删除" danger onClick={() => { if (confirm('删除该映射候选？')) delM.mutate(mapping.id) }} icon={Trash2} />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
-            <div className="flex justify-end gap-2.5 px-6 py-4 border-t border-border">
-              <button onClick={() => setOpen(false)} className="px-4 py-2 text-sm text-text-secondary">
-                取消
-              </button>
-              <button
-                onClick={() => saveM.mutate({ ...form, enabled: true })}
-                disabled={!form.client_model || !form.upstream_model}
-                className="px-4 py-2 rounded-lg bg-primary text-primary-fg text-sm font-medium disabled:opacity-50"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
+          )
+        })}
+      </div>
+
+      {open && (
+        <MappingDialog
+          form={form}
+          setForm={setForm}
+          providers={providers}
+          models={models}
+          loadingModels={loadingModels}
+          err={err}
+          onClose={() => setOpen(false)}
+          onProviderChange={(providerId) => {
+            setForm((prev) => ({ ...prev, provider_id: providerId }))
+            fetchModels(providerId)
+          }}
+          onFetchModels={() => fetchModels(form.provider_id)}
+          onSave={() => saveM.mutate({ ...form, enabled: true })}
+          isSaving={saveM.isPending}
+        />
       )}
     </div>
   )
 }
+
+const StatusToggle = ({ mapping, toggleM }) => (
+  <button
+    onClick={() => toggleM.mutate({ id: mapping.id, enabled: !mapping.enabled })}
+    className={`w-fit rounded-full border px-2.5 py-1 text-xs font-medium ${
+      mapping.enabled
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        : 'border-slate-200 bg-white text-slate-500'
+    }`}
+  >
+    {mapping.enabled ? '已启用' : '已停用'}
+  </button>
+)
+
+const MappingDialog = ({ form, setForm, providers, models, loadingModels, err, onClose, onProviderChange, onFetchModels, onSave, isSaving }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
+    <div className="w-full max-w-2xl rounded-lg border border-slate-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className="border-b border-slate-200 px-6 py-5">
+        <h2 className="text-xl font-semibold text-slate-950">{form.id ? '编辑映射' : '新增映射'}</h2>
+        <p className="mt-1 text-sm text-slate-500">新增候选会加入对应客户端 model 的 fallback 队列。</p>
+      </div>
+      <div className="space-y-5 px-6 py-6">
+        <div>
+          <Label>客户端 model</Label>
+          <div className="mt-2 grid gap-2 sm:grid-cols-3">
+            {CLIENT_MODELS.map((model) => {
+              const active = form.client_model === model.id
+              return (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => setForm((prev) => ({ ...prev, client_model: model.id }))}
+                  className={`rounded-lg border p-3 text-left transition-colors ${active ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                >
+                  <div className="text-sm font-semibold text-slate-950">{model.label}</div>
+                  <div className="mt-1 truncate font-mono text-[11px] text-slate-500">{model.id}</div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label>
+            <Label>Provider</Label>
+            <select
+              value={form.provider_id}
+              onChange={(e) => onProviderChange(+e.target.value)}
+              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-950 outline-none focus:border-blue-500"
+            >
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>{provider.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <div className="flex items-center justify-between">
+              <Label>upstream model</Label>
+              <button
+                type="button"
+                onClick={onFetchModels}
+                disabled={loadingModels || !form.provider_id}
+                className="inline-flex items-center gap-1 text-xs text-blue-700 disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={loadingModels ? 'animate-spin' : ''} />
+                {loadingModels ? '获取中' : '刷新'}
+              </button>
+            </div>
+            <input
+              value={form.upstream_model}
+              onChange={(e) => setForm((prev) => ({ ...prev, upstream_model: e.target.value }))}
+              placeholder="deepseek-chat"
+              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 font-mono text-sm text-slate-950 outline-none placeholder:text-slate-400 focus:border-blue-500"
+            />
+          </label>
+        </div>
+
+        {models && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            {models.ok ? (
+              <div className="flex flex-wrap gap-2">
+                {models.models.length === 0 && <span className="text-xs text-slate-500">上游返回 0 个 model，可手动填写。</span>}
+                {models.models.map((model) => (
+                  <button
+                    key={model}
+                    type="button"
+                    onClick={() => setForm((prev) => ({ ...prev, upstream_model: model }))}
+                    className={`rounded-md border px-2.5 py-1 font-mono text-xs ${form.upstream_model === model ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600 hover:border-blue-200'}`}
+                  >
+                    {model}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-red-700">获取失败：{models.error}</div>
+            )}
+          </div>
+        )}
+
+        {err && <div className="text-sm text-red-700">{err}</div>}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-slate-200 px-6 py-4">
+        <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950">取消</button>
+        <button
+          onClick={onSave}
+          disabled={!form.provider_id || !form.client_model || !form.upstream_model || isSaving}
+          className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSaving ? '保存中...' : '保存'}
+        </button>
+      </div>
+    </div>
+  </div>
+)
+
+const PageHeader = ({ eyebrow, title, desc }) => (
+  <div>
+    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-blue-700">{eyebrow}</p>
+    <h1 className="mt-2 text-3xl font-semibold text-slate-950">{title}</h1>
+    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{desc}</p>
+  </div>
+)
+
+const Label = ({ children }) => (
+  <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">{children}</div>
+)
+
+const IconButton = ({ title, onClick, icon: Icon, danger }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    title={title}
+    className={`inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white transition-colors hover:bg-slate-50 ${
+      danger ? 'text-red-600 hover:border-red-200' : 'text-slate-600 hover:border-blue-200'
+    }`}
+  >
+    <Icon size={14} />
+  </button>
+)

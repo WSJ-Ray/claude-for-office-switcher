@@ -1,15 +1,25 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Play, Pencil, Trash2 } from 'lucide-react'
-import { get, post, del } from '../lib/api'
+import { CheckCircle2, Pencil, Play, Plus, Server, Trash2, XCircle } from 'lucide-react'
+import { get, post, put, del } from '../lib/api'
 import ProviderForm from '../components/ProviderForm'
+
+const formatLabel = {
+  anthropic: 'Anthropic',
+  openai_chat: 'OpenAI Chat',
+  openai_responses: 'Responses',
+  vertex: 'Vertex AI'
+}
 
 export default function Providers() {
   const qc = useQueryClient()
-  const { data } = useQuery({ queryKey: ['providers'], queryFn: () => get('/admin/providers') })
+  const { data, isLoading } = useQuery({ queryKey: ['providers'], queryFn: () => get('/admin/providers') })
   const [show, setShow] = useState(false)
   const [edit, setEdit] = useState(null)
   const [testResult, setTestResult] = useState(null)
+
+  const providers = data?.data || []
+  const enabledCount = providers.filter((provider) => provider.enabled).length
 
   const delM = useMutation({
     mutationFn: (id) => del(`/admin/providers/${id}`),
@@ -21,116 +31,202 @@ export default function Providers() {
   })
   const testM = useMutation({
     mutationFn: (id) => post(`/admin/providers/${id}/test`),
-    onSuccess: (r) => setTestResult({ id: r.id, ok: true, ...r }),
+    onSuccess: (result) => setTestResult({ ok: true, ...result }),
     onError: (e) => setTestResult({ ok: false, error: e.message })
   })
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-semibold">提供商配置</h1>
-          <p className="text-[13px] text-text-muted mt-1">管理多个 API 端点，按模型路由到不同上游</p>
-        </div>
+    <div className="mx-auto max-w-7xl space-y-6">
+      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+        <PageHeader
+          eyebrow="Providers"
+          title="Provider 配置"
+          desc="管理 upstream API 端点，控制启用状态、默认 Provider 与模型预览。"
+        />
         <button
           onClick={() => {
             setEdit(null)
             setShow(true)
           }}
-          className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-fg rounded-lg text-sm font-medium hover:opacity-90"
+          className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-black px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-800"
         >
-          <Plus size={14} />
-          新增提供商
+          <Plus size={16} />
+          新增 Provider
         </button>
       </div>
 
-      <div className="rounded-xl bg-bg-card border border-border overflow-hidden">
-        <div className="flex items-center px-5 py-3.5 bg-bg-elevated text-[11px] font-semibold text-text-muted">
-          <div className="w-[180px]">名称</div>
-          <div className="w-[120px]">格式</div>
-          <div className="flex-1">BASE URL</div>
-          <div className="w-20">启用</div>
-          <div className="w-20">默认</div>
-          <div className="w-[160px]">操作</div>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Stat label="Provider 总数" value={providers.length} />
+        <Stat label="启用中" value={enabledCount} tone="emerald" />
+        <Stat label="默认 Provider" value={providers.find((provider) => provider.is_default)?.name || '-'} tone="amber" />
+      </div>
+
+      <div className="hidden overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm md:block">
+        <div className="overflow-x-auto">
+          <div className="min-w-[930px]">
+        <div className="grid grid-cols-[220px_140px_minmax(240px,1fr)_90px_90px_150px] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+          <div>名称</div>
+          <div>格式</div>
+          <div>Base URL</div>
+          <div>启用</div>
+          <div>默认</div>
+          <div className="text-right">操作</div>
         </div>
-        {(data?.data || []).map((p) => (
-          <div key={p.id} className="flex items-center px-5 py-4 border-t border-border text-sm">
-            <div className="w-[180px] flex items-center gap-2.5">
-              <span className={`w-2 h-2 rounded-full ${p.enabled ? 'bg-success' : 'bg-text-tertiary'}`} />
-              <span className="font-medium">{p.name}</span>
+
+        {isLoading && <div className="px-5 py-10 text-center text-sm text-slate-400">加载中...</div>}
+        {!isLoading && providers.length === 0 && (
+          <div className="px-5 py-12 text-center">
+            <Server className="mx-auto text-slate-600" size={28} />
+            <p className="mt-3 text-sm text-slate-400">还没有 Provider，先新增一个 upstream API 端点。</p>
+          </div>
+        )}
+
+        {providers.map((provider) => (
+          <div key={provider.id} className="grid grid-cols-[220px_140px_minmax(240px,1fr)_90px_90px_150px] items-center gap-4 border-b border-slate-200 px-5 py-4 text-sm last:border-b-0">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className={provider.enabled ? 'h-2 w-2 rounded-full bg-emerald-500' : 'h-2 w-2 rounded-full bg-slate-300'} />
+              <span className="truncate font-medium text-slate-950">{provider.name}</span>
             </div>
-            <div className="w-[120px]">
-              <span className="px-2.5 py-0.5 bg-bg-elevated border border-border rounded-full font-mono text-[11px] text-text-secondary">
-                {p.format}
+            <div>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-600">
+                {formatLabel[provider.format] || provider.format}
               </span>
             </div>
-            <div className="flex-1 font-mono text-[12px] text-text-secondary truncate">{p.base_url}</div>
-            <div className="w-20">
+            <div className="truncate font-mono text-xs text-slate-400">{provider.base_url}</div>
+            <div>
               <button
-                onClick={() => toggleM.mutate({ id: p.id, enabled: !p.enabled })}
-                className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${
-                  p.enabled
-                    ? 'text-success border-success/30 bg-success/10'
-                    : 'text-text-muted border-border bg-bg-elevated'
+                onClick={() => toggleM.mutate({ id: provider.id, enabled: !provider.enabled })}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  provider.enabled
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-950'
                 }`}
-                title={p.enabled ? '点击停用' : '点击启用'}
               >
-                {p.enabled ? '已启用' : '已停用'}
+                {provider.enabled ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                {provider.enabled ? '启用' : '停用'}
               </button>
             </div>
-            <div className="w-20">
-              {p.is_default ? (
-                <span className="px-2 py-0.5 rounded text-primary text-[10px] font-semibold" style={{ background: 'rgba(99,102,241,0.15)' }}>
-                  默认
-                </span>
-              ) : (
-                <span className="text-text-tertiary">—</span>
-              )}
-            </div>
-            <div className="w-[160px] flex gap-1.5">
-              <button
-                onClick={() => testM.mutate(p.id)}
-                className="p-1.5 bg-bg-elevated border border-border rounded-md hover:border-primary"
-                title="测试"
-              >
-                <Play size={13} className="text-text-secondary" />
-              </button>
-              <button
+            <div className="text-sm text-slate-500">{provider.is_default ? <span className="text-amber-700">默认</span> : '-'}</div>
+            <div className="flex justify-end gap-1.5">
+              <IconButton title="测试连接" onClick={() => testM.mutate(provider.id)} icon={Play} />
+              <IconButton
+                title="编辑"
                 onClick={() => {
-                  setEdit(p)
+                  setEdit(provider)
                   setShow(true)
                 }}
-                className="p-1.5 bg-bg-elevated border border-border rounded-md hover:border-primary"
-                title="编辑"
-              >
-                <Pencil size={13} className="text-text-secondary" />
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm('删除提供商？相关映射将一并失效。')) delM.mutate(p.id)
-                }}
-                className="p-1.5 bg-bg-elevated border border-border rounded-md hover:border-danger"
+                icon={Pencil}
+              />
+              <IconButton
                 title="删除"
-              >
-                <Trash2 size={13} className="text-danger" />
-              </button>
+                danger
+                onClick={() => {
+                  if (confirm('删除该 Provider？相关映射会失效。')) delM.mutate(provider.id)
+                }}
+                icon={Trash2}
+              />
             </div>
           </div>
         ))}
-        {testResult && (
-          <div className="px-5 py-3 border-t border-border text-[12px]">
-            {testResult.ok ? (
-              <span className="text-success">
-                ✓ 连接成功，发现 {testResult.models} 个模型（{testResult.latency_ms}ms）
-              </span>
-            ) : (
-              <span className="text-danger">✗ 连接失败：{testResult.error}</span>
-            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:hidden">
+        {isLoading && <div className="rounded-lg border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">加载中...</div>}
+        {!isLoading && providers.length === 0 && (
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-10 text-center">
+            <Server className="mx-auto text-slate-400" size={28} />
+            <p className="mt-3 text-sm text-slate-500">还没有 Provider，先新增一个 upstream API 端点。</p>
           </div>
         )}
+        {providers.map((provider) => (
+          <div key={provider.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={provider.enabled ? 'h-2 w-2 rounded-full bg-emerald-500' : 'h-2 w-2 rounded-full bg-slate-300'} />
+                  <span className="truncate font-medium text-slate-950">{provider.name}</span>
+                </div>
+                <div className="mt-2 truncate font-mono text-xs text-slate-500">{provider.base_url}</div>
+              </div>
+              <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-xs text-slate-600">
+                {formatLabel[provider.format] || provider.format}
+              </span>
+            </div>
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <button
+                onClick={() => toggleM.mutate({ id: provider.id, enabled: !provider.enabled })}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  provider.enabled
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-slate-200 bg-white text-slate-500'
+                }`}
+              >
+                {provider.enabled ? <CheckCircle2 size={13} /> : <XCircle size={13} />}
+                {provider.enabled ? '启用' : '停用'}
+              </button>
+              <div className="flex gap-1.5">
+                <IconButton title="测试连接" onClick={() => testM.mutate(provider.id)} icon={Play} />
+                <IconButton title="编辑" onClick={() => { setEdit(provider); setShow(true) }} icon={Pencil} />
+                <IconButton
+                  title="删除"
+                  danger
+                  onClick={() => {
+                    if (confirm('删除该 Provider？相关映射会失效。')) delM.mutate(provider.id)
+                  }}
+                  icon={Trash2}
+                />
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
+
+      {testResult && (
+        <div className={`rounded-lg border px-4 py-3 text-sm ${
+          testResult.ok
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-red-200 bg-red-50 text-red-700'
+        }`}>
+          {testResult.ok
+            ? `连接成功，发现 ${testResult.models} 个 model${testResult.latency_ms != null ? `，耗时 ${testResult.latency_ms}ms` : ''}`
+            : `连接失败：${testResult.error}`}
+        </div>
+      )}
 
       {show && <ProviderForm provider={edit} onClose={() => setShow(false)} />}
     </div>
   )
 }
+
+const PageHeader = ({ eyebrow, title, desc }) => (
+  <div>
+    <p className="text-sm font-semibold uppercase tracking-[0.16em] text-blue-700">{eyebrow}</p>
+    <h1 className="mt-2 text-3xl font-semibold text-slate-950">{title}</h1>
+    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">{desc}</p>
+  </div>
+)
+
+const Stat = ({ label, value, tone = 'cyan' }) => {
+  const color = tone === 'emerald' ? 'text-emerald-700' : tone === 'amber' ? 'text-amber-700' : 'text-blue-700'
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">{label}</div>
+      <div className={`mt-2 truncate text-2xl font-semibold ${color}`}>{value}</div>
+    </div>
+  )
+}
+
+const IconButton = ({ title, onClick, icon: Icon, danger }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    title={title}
+    className={`inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white transition-colors hover:bg-slate-50 ${
+      danger ? 'text-red-600 hover:border-red-200' : 'text-slate-600 hover:border-blue-200'
+    }`}
+  >
+    <Icon size={14} />
+  </button>
+)

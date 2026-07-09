@@ -1,13 +1,23 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Zap, Boxes, Hash, MessageSquare, MessagesSquare, Sparkles, Copy, Info } from 'lucide-react'
+import {
+  Boxes,
+  Check,
+  Copy,
+  Hash,
+  MessageSquare,
+  MessagesSquare,
+  Sparkles,
+  X,
+  Zap
+} from 'lucide-react'
 import { post, put } from '../lib/api'
 
 const FORMATS = [
-  { value: 'anthropic', label: 'Anthropic 原生', Icon: Hash, hint: '已透传' },
-  { value: 'openai_chat', label: 'OpenAI Chat', Icon: MessageSquare, hint: '需翻译' },
-  { value: 'openai_responses', label: 'OpenAI Responses', Icon: MessagesSquare, hint: '需翻译' },
-  { value: 'vertex', label: 'Vertex AI (Gemini)', Icon: Sparkles, hint: '需翻译' }
+  { value: 'anthropic', label: 'Anthropic 原生', Icon: Hash, hint: '直连 Anthropic Messages' },
+  { value: 'openai_chat', label: 'OpenAI Chat', Icon: MessageSquare, hint: '自动格式转换' },
+  { value: 'openai_responses', label: 'OpenAI Responses', Icon: MessagesSquare, hint: 'Responses API' },
+  { value: 'vertex', label: 'Vertex AI', Icon: Sparkles, hint: 'Gemini / Vertex' }
 ]
 
 export default function ProviderForm({ provider, onClose }) {
@@ -22,13 +32,26 @@ export default function ProviderForm({ provider, onClose }) {
     is_default: provider?.is_default ?? false,
     extra_config: provider?.extra_config || {}
   })
+  const [extraText, setExtraText] = useState(JSON.stringify(provider?.extra_config || {}, null, 2))
   const [models, setModels] = useState(null)
   const [fetching, setFetching] = useState(false)
   const [err, setErr] = useState(null)
 
+  const parsedExtra = useMemo(() => {
+    try {
+      return { ok: true, value: JSON.parse(extraText || '{}') }
+    } catch (e) {
+      return { ok: false, error: e.message }
+    }
+  }, [extraText])
+
+  const payload = () => ({
+    ...form,
+    extra_config: parsedExtra.ok ? parsedExtra.value : form.extra_config
+  })
+
   const saveM = useMutation({
-    mutationFn: (data) =>
-      isEdit ? put(`/admin/providers/${provider.id}`, data) : post('/admin/providers', data),
+    mutationFn: (data) => isEdit ? put(`/admin/providers/${provider.id}`, data) : post('/admin/providers', data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] })
       onClose()
@@ -37,194 +60,190 @@ export default function ProviderForm({ provider, onClose }) {
   })
 
   const fetchModels = async () => {
+    if (!parsedExtra.ok) {
+      setErr(`高级配置 JSON 无效：${parsedExtra.error}`)
+      return
+    }
     setFetching(true)
     setModels(null)
     setErr(null)
     try {
-      const r = await post('/admin/providers/preview-models', form)
-      setModels(r)
+      const result = await post('/admin/providers/preview-models', payload())
+      setModels(result)
     } catch (e) {
       setModels({ ok: false, error: e.message })
+    } finally {
+      setFetching(false)
     }
-    setFetching(false)
   }
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+  const save = () => {
+    if (!parsedExtra.ok) {
+      setErr(`高级配置 JSON 无效：${parsedExtra.error}`)
+      return
+    }
+    saveM.mutate(payload())
+  }
+
+  const set = (key, value) => setForm((prev) => ({ ...prev, [key]: value }))
+  const updateExtra = (key, value) => {
+    const next = { ...(parsedExtra.ok ? parsedExtra.value : form.extra_config), [key]: value }
+    if (!value) delete next[key]
+    setExtraText(JSON.stringify(next, null, 2))
+    setForm((prev) => ({ ...prev, extra_config: next }))
+  }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 py-6" onClick={onClose}>
       <div
-        className="w-[720px] max-h-[90vh] overflow-y-auto bg-bg-card border border-border rounded-2xl"
+        className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-5 border-b border-border">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
           <div>
-            <h2 className="text-lg font-semibold">{isEdit ? '编辑提供商' : '新增提供商'}</h2>
-            <p className="text-[12px] text-text-muted mt-1">
-              配置一个 API 端点，网关可按模型路由到该提供商
-            </p>
+            <h2 className="text-xl font-semibold text-slate-950">{isEdit ? '编辑 Provider' : '新增 Provider'}</h2>
+            <p className="mt-1 text-sm text-slate-500">配置一个 API 端点，gateway 会按模型映射路由到它。</p>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-md bg-bg-elevated hover:bg-bg">
-            <X size={14} className="text-text-secondary" />
+          <button onClick={onClose} className="rounded-lg border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-950">
+            <X size={16} />
           </button>
         </div>
 
-        <div className="px-6 py-6 space-y-5">
-          <div>
-            <div className="text-[12px] font-medium text-text-secondary mb-2">端点格式</div>
-            <div className="grid grid-cols-4 gap-2">
-              {FORMATS.map((f) => {
-                const active = form.format === f.value
+        <div className="space-y-6 px-6 py-6">
+          <section>
+            <Label>端点格式</Label>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              {FORMATS.map((item) => {
+                const active = form.format === item.value
                 return (
                   <button
-                    key={f.value}
-                    onClick={() => set('format', f.value)}
-                    className={`p-3.5 rounded-[10px] text-left border-2 ${
+                    key={item.value}
+                    type="button"
+                    onClick={() => set('format', item.value)}
+                    className={`rounded-lg border p-3 text-left transition-colors duration-200 ${
                       active
-                        ? 'bg-bg-elevated border-primary'
-                        : 'bg-bg border-transparent hover:border-border'
+                        ? 'border-blue-200 bg-blue-50'
+                        : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <f.Icon size={15} className={active ? 'text-primary' : 'text-text-secondary'} />
-                        <span className="text-[13px] font-semibold">{f.label}</span>
-                      </div>
-                      <div
-                        className={`w-4 h-4 rounded-full flex items-center justify-center ${
-                          active ? 'bg-primary' : 'border border-text-tertiary'
-                        }`}
-                      >
-                        {active && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                      </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <item.Icon size={16} className={active ? 'text-blue-700' : 'text-slate-500'} />
+                      {active && <Check size={15} className="text-blue-700" />}
                     </div>
-                    <div className="text-[11px] text-text-muted">{f.hint}</div>
+                    <div className="mt-3 text-sm font-semibold text-slate-950">{item.label}</div>
+                    <div className="mt-1 text-xs text-slate-500">{item.hint}</div>
                   </button>
                 )
               })}
             </div>
-          </div>
+          </section>
 
-          <div className="grid grid-cols-2 gap-3.5">
-            <Field label="名称" value={form.name} onChange={(v) => set('name', v)} placeholder="例如：DeepSeek" />
-            <Field label="超时（秒）" value="120" onChange={() => {}} disabled />
+          <section className="grid gap-4 md:grid-cols-2">
+            <Field label="名称" value={form.name} onChange={(v) => set('name', v)} placeholder="例如 DeepSeek" />
             <Field label="Base URL" value={form.base_url} onChange={(v) => set('base_url', v)} placeholder="https://api.deepseek.com/anthropic" mono />
             <Field label="API Key" value={form.api_key} onChange={(v) => set('api_key', v)} placeholder="sk-..." mono secret />
-          </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Switch label="启用" on={form.enabled} onChange={(v) => set('enabled', v)} />
+              <Switch label="默认 Provider" on={form.is_default} onChange={(v) => set('is_default', v)} />
+            </div>
+          </section>
 
-          <div>
-            <div className="text-[12px] font-medium text-text-secondary mb-1.5">
-              高级配置（JSON，可选）
+          <section>
+            <div className="flex items-center justify-between gap-3">
+              <Label>高级配置 JSON</Label>
+              {(form.format === 'anthropic') && (
+                <button
+                  type="button"
+                  onClick={() => updateExtra('enable_prompt_caching', !parsedExtra.value?.enable_prompt_caching)}
+                  className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                    parsedExtra.value?.enable_prompt_caching
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-950'
+                  }`}
+                >
+                  Prompt Cache
+                </button>
+              )}
             </div>
-            <div className="text-[11px] text-text-muted mb-1.5">
-              Vertex: {'{project, region}'} · OpenAI: {'{organization}'}
-            </div>
-            <div className="p-3.5 bg-bg border border-border rounded-lg font-mono text-[12px] text-text-tertiary">
-              {'{ }'}
-            </div>
-          </div>
+            <textarea
+              value={extraText}
+              onChange={(e) => setExtraText(e.target.value)}
+              rows={5}
+              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 font-mono text-xs leading-5 text-slate-950 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-500"
+              placeholder='{"organization":"org_xxx"}'
+            />
+            {!parsedExtra.ok && <p className="mt-2 text-xs text-red-700">JSON 无效：{parsedExtra.error}</p>}
+          </section>
 
-          <div>
-            <div className="flex justify-between items-center mb-2">
-              <div className="text-[12px] font-medium text-text-secondary">上游模型预览</div>
-              <div className="text-[11px] text-text-muted">点击按钮使用当前配置拉取模型列表</div>
-            </div>
-            <div className="flex justify-end mb-2">
+          <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-950">上游模型预览</h3>
+                <p className="mt-1 text-xs text-slate-500">使用当前表单配置调用上游 list models 接口。</p>
+              </div>
               <button
                 onClick={fetchModels}
-                disabled={fetching}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-bg-elevated border border-border text-sm font-medium hover:border-primary disabled:opacity-50"
+                disabled={fetching || !form.base_url}
+                className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-blue-200 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Boxes size={13} className="text-primary" />
-                {fetching ? '获取中…' : '获取模型列表'}
+                <Boxes size={15} className="text-blue-700" />
+                {fetching ? '获取中...' : '获取模型列表'}
               </button>
             </div>
+
             {models && (
-              <div className="p-3.5 bg-bg border border-border rounded-lg space-y-2.5">
+              <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
                 {models.ok ? (
                   <>
-                    <div className="flex items-center gap-2 text-[12px] text-success">
-                      <span className="w-2 h-2 rounded-full bg-success" />
-                      连接成功 · 共 {models.models.length} 个模型
-                      {models.latency_ms != null && (
-                        <span className="text-text-muted font-mono">· {models.latency_ms}ms</span>
-                      )}
+                    <div className="text-sm text-emerald-700">
+                      连接成功，共 {models.models.length} 个 model
+                      {models.latency_ms != null && <span className="font-mono text-slate-500"> / {models.latency_ms}ms</span>}
                     </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {models.models.slice(0, 3).map((m) => (
-                        <span
-                          key={m}
-                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-bg-elevated border border-border font-mono text-[11px]"
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {models.models.slice(0, 8).map((model) => (
+                        <button
+                          key={model}
+                          type="button"
+                          onClick={() => navigator.clipboard?.writeText(model)}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 font-mono text-xs text-slate-700 hover:border-blue-200"
+                          title="复制 model ID"
                         >
-                          <Copy
-                            size={10}
-                            className="text-text-muted cursor-pointer"
-                            onClick={() => navigator.clipboard?.writeText(m)}
-                          />
-                          {m}
-                        </span>
+                          <Copy size={11} className="text-slate-500" />
+                          {model}
+                        </button>
                       ))}
-                      {models.models.length > 3 && (
-                        <span className="px-2.5 py-1 text-[11px] text-text-muted">
-                          + {models.models.length - 3} more
-                        </span>
-                      )}
+                      {models.models.length > 8 && <span className="px-2.5 py-1 text-xs text-slate-500">+ {models.models.length - 8} more</span>}
                     </div>
                   </>
                 ) : (
-                  <div className="text-[12px] text-danger">连接失败：{models.error}</div>
+                  <div className="text-sm text-red-700">连接失败：{models.error}</div>
                 )}
               </div>
             )}
-            <div className="flex items-center gap-1.5 mt-2 text-[11px] text-text-muted">
-              <Info size={11} />
-              这些 ID 来自上游 API 实时返回，模型映射页可直接选用。
-            </div>
-          </div>
+          </section>
 
-          <div className="space-y-3 pt-2">
-            <Sw
-              label="启用此提供商"
-              desc="关闭后网关将不再路由到该提供商"
-              on={form.enabled}
-              onChange={(v) => set('enabled', v)}
-            />
-            <Sw
-              label="设为默认提供商"
-              desc="当模型未在映射表中匹配时，回退到该提供商"
-              on={form.is_default}
-              onChange={(v) => set('is_default', v)}
-            />
-            {(form.format === 'anthropic' || form.format === 'url_adaptive') && (
-              <Sw
-                label="启用 Prompt 缓存"
-                desc="在 system prompt 中注入 cache_control 标记，利用上游内容缓存降低延迟和费用"
-                on={!!form.extra_config.enable_prompt_caching}
-                onChange={(v) => setForm((f) => ({ ...f, extra_config: { ...f.extra_config, enable_prompt_caching: v } }))}
-              />
-            )}
-          </div>
-
-          {err && <div className="text-[12px] text-danger">保存失败：{err}</div>}
+          {err && <div className="text-sm text-red-700">{err}</div>}
         </div>
 
-        <div className="flex items-center justify-between px-6 py-4 border-t border-border">
+        <div className="flex items-center justify-between gap-3 border-t border-slate-200 px-6 py-4">
           <button
             onClick={fetchModels}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-bg-elevated border border-border text-sm font-medium hover:border-warning"
+            disabled={fetching || !form.base_url}
+            className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 transition-colors hover:border-amber-200 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Zap size={14} className="text-warning" />测试连接
+            <Zap size={15} className="text-amber-700" />
+            测试连接
           </button>
-          <div className="flex gap-2.5">
-            <button onClick={onClose} className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary">
+          <div className="flex gap-2">
+            <button onClick={onClose} className="rounded-lg px-4 py-2 text-sm text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-950">
               取消
             </button>
             <button
-              onClick={() => saveM.mutate(form)}
-              disabled={!form.name || !form.base_url}
-              className="px-4 py-2 rounded-lg bg-primary text-primary-fg text-sm font-medium hover:opacity-90 disabled:opacity-50"
+              onClick={save}
+              disabled={!form.name || !form.base_url || saveM.isPending || !parsedExtra.ok}
+              className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              保存
+              {saveM.isPending ? '保存中...' : '保存'}
             </button>
           </div>
         </div>
@@ -233,39 +252,34 @@ export default function ProviderForm({ provider, onClose }) {
   )
 }
 
-const Field = ({ label, value, onChange, placeholder, mono, secret, disabled }) => (
-  <div>
-    <div className="text-[12px] font-medium text-text-secondary mb-1.5">{label}</div>
-    <div className={`flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-bg border border-border ${disabled ? 'opacity-50' : ''}`}>
-      <input
-        type={secret ? 'password' : 'text'}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        disabled={disabled}
-        className={`flex-1 bg-transparent text-[13px] focus:outline-none ${mono ? 'font-mono' : 'font-sans'} ${
-          value ? 'text-text-primary' : 'text-text-tertiary'
-        }`}
-      />
-    </div>
-  </div>
+const Label = ({ children }) => (
+  <div className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">{children}</div>
 )
 
-const Sw = ({ label, desc, on, onChange }) => (
-  <div className="flex items-center gap-3">
-    <div className="flex-1">
-      <div className="text-[13px] text-text-primary">{label}</div>
-      <div className="text-[11px] text-text-muted">{desc}</div>
-    </div>
-    <button
-      onClick={() => onChange(!on)}
-      className={`w-9 h-5 rounded-full border border-border ${on ? 'bg-primary' : 'bg-bg-elevated'}`}
-    >
-      <div
-        className={`w-3.5 h-3.5 rounded-full bg-white mt-[1px] transition-transform ${
-          on ? 'translate-x-[18px]' : 'translate-x-[2px]'
-        }`}
-      />
-    </button>
-  </div>
+const Field = ({ label, value, onChange, placeholder, mono, secret }) => (
+  <label className="block">
+    <Label>{label}</Label>
+    <input
+      type={secret ? 'password' : 'text'}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={`mt-2 w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-950 outline-none transition-colors placeholder:text-slate-400 focus:border-blue-500 ${mono ? 'font-mono' : ''}`}
+    />
+  </label>
+)
+
+const Switch = ({ label, on, onChange }) => (
+  <button
+    type="button"
+    onClick={() => onChange(!on)}
+    className={`flex h-full min-h-[68px] cursor-pointer items-center justify-between gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors ${
+      on ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+    }`}
+  >
+    <span className="text-sm font-medium text-slate-950">{label}</span>
+    <span className={`relative h-5 w-9 rounded-full transition-colors ${on ? 'bg-black' : 'bg-slate-300'}`}>
+      <span className={`absolute top-1 h-3 w-3 rounded-full bg-white transition-transform ${on ? 'translate-x-5' : 'translate-x-1'}`} />
+    </span>
+  </button>
 )
