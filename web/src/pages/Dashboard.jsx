@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { CartesianGrid, Legend as RechartsLegend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   Activity,
   AlertTriangle,
@@ -7,10 +9,12 @@ import {
   DatabaseZap,
   Gauge,
   Route,
+  RefreshCw,
   Server,
   Zap
 } from 'lucide-react'
 import { get } from '../lib/api'
+import { statsPath, trendTickInterval } from '../lib/trend'
 
 const fmtMs = (ms) => (ms == null ? '-' : `${(ms / 1000).toFixed(2)}s`)
 const fmtNum = (n) => Number(n || 0).toLocaleString()
@@ -26,6 +30,17 @@ const summaryFallback = {
   avg_duration_ms: 0,
   cache_r: 0,
   cache_w: 0
+}
+
+const refreshOptions = [
+  { value: 10_000, label: '每 10 秒' },
+  { value: 30_000, label: '每 30 秒' },
+  { value: 60_000, label: '每 60 秒' }
+]
+
+const fmtRefreshTime = (timestamp) => {
+  if (!timestamp) return '等待首次加载'
+  return `上次更新 ${new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
 }
 
 const toneClass = {
@@ -60,7 +75,7 @@ const MetricCard = ({ icon: Icon, label, value, detail, tone = 'blue' }) => (
   </div>
 )
 
-const RequestTrend = ({ hourly }) => {
+const LegacyRequestTrend = ({ hourly }) => {
   const chartData = hourly.length > 0
     ? hourly.slice(-24)
     : Array.from({ length: 24 }, (_, i) => ({ hour: `${String(i).padStart(2, '0')}:00`, count: 0, errors: 0 }))
@@ -118,6 +133,48 @@ const RequestTrend = ({ hourly }) => {
         <Legend color="bg-blue-500" label="请求" />
         <Legend color="bg-amber-400" label="错误" />
       </div>
+    </Panel>
+  )
+}
+
+const trendOptions = [
+  { value: '24h', label: '24 小时' },
+  { value: '7d', label: '7 天' },
+  { value: '30d', label: '30 天' }
+]
+
+const RequestTrend = ({ trend, range, onRangeChange }) => {
+  const fallbackCount = range === '24h' ? 24 : range === '7d' ? 7 : 30
+  const chartData = trend.length > 0
+    ? trend
+    : Array.from({ length: fallbackCount }, (_, index) => ({ label: range === '24h' ? `${String(index).padStart(2, '0')}:00` : `${index + 1}`, count: 0, errors: 0 }))
+  const max = Math.max(1, ...chartData.map((item) => item.count))
+  const hasTraffic = chartData.some((item) => item.count > 0)
+
+  return (
+    <Panel
+      title="请求趋势"
+      icon={BarChart3}
+      aside={
+        <select aria-label="趋势时间范围" value={range} onChange={(event) => onRangeChange(event.target.value)} className="min-h-8 rounded-md border border-slate-200 bg-white px-2 text-xs font-medium text-slate-700">
+          {trendOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      }
+    >
+      <div className="h-60" aria-label={`${trendOptions.find((option) => option.value === range)?.label} 请求趋势图`}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+            <XAxis dataKey="label" interval={trendTickInterval(range)} tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
+            <YAxis allowDecimals={false} width={34} tickLine={false} axisLine={false} tick={{ fill: '#64748b', fontSize: 11 }} />
+            <Tooltip cursor={{ stroke: '#cbd5e1', strokeWidth: 1 }} contentStyle={{ borderRadius: 6, borderColor: '#e2e8f0', boxShadow: '0 4px 10px rgb(15 23 42 / 0.08)' }} formatter={(value, name) => [fmtNum(value), name === 'count' ? '请求' : '错误']} />
+            <RechartsLegend formatter={(value) => (value === 'count' ? '请求' : '错误')} wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+            <Line type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
+            <Line type="monotone" dataKey="errors" stroke="#f59e0b" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="mt-2 text-xs text-slate-500">{hasTraffic ? `峰值 ${fmtNum(max)} 次请求` : '等待流量数据'}</p>
     </Panel>
   )
 }
@@ -215,16 +272,34 @@ const Checklist = ({ providers, mappingsCount, summary }) => {
 }
 
 export default function Dashboard() {
-  const { data: stats, isFetching } = useQuery({
-    queryKey: ['stats'],
-    queryFn: () => get('/admin/stats'),
-    refetchInterval: 5000
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshInterval, setRefreshInterval] = useState(30_000)
+  const [trendRange, setTrendRange] = useState('24h')
+  const statsQuery = useQuery({
+    queryKey: ['stats', trendRange],
+    queryFn: () => get(statsPath(trendRange)),
+    refetchInterval: autoRefresh ? refreshInterval : false,
+    refetchIntervalInBackground: false
   })
-  const { data: providers } = useQuery({
+  const providersQuery = useQuery({
     queryKey: ['providers'],
     queryFn: () => get('/admin/providers'),
-    refetchInterval: 5000
+    refetchInterval: autoRefresh ? refreshInterval : false,
+    refetchIntervalInBackground: false
   })
+
+  const { data: stats } = statsQuery
+  const { data: providers } = providersQuery
+  const isRefreshing = statsQuery.isFetching || providersQuery.isFetching
+  const isUnavailable = (!stats || !providers) && (statsQuery.isError || providersQuery.isError)
+  const isInitialLoading = !isUnavailable && (!stats || !providers) && (statsQuery.isLoading || providersQuery.isLoading)
+  const hasRefreshError = !isUnavailable && (statsQuery.isError || providersQuery.isError)
+  const lastUpdatedAt = Math.max(statsQuery.dataUpdatedAt || 0, providersQuery.dataUpdatedAt || 0)
+  const refreshError = statsQuery.error || providersQuery.error
+  const refetchAll = () => {
+    void statsQuery.refetch()
+    void providersQuery.refetch()
+  }
 
   const summary = stats?.summary || summaryFallback
   const providerList = providers?.data || []
@@ -250,44 +325,117 @@ export default function Dashboard() {
             实时查看请求、Provider、Token、TTFT 与 Cache 指标。
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-          <Activity size={14} className={isFetching ? 'text-blue-600' : 'text-slate-400'} />
-          {isFetching ? '正在刷新' : '每 5 秒自动刷新'}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            自动刷新
+          </label>
+          <label className="sr-only" htmlFor="dashboard-refresh-interval">自动刷新间隔</label>
+          <select
+            id="dashboard-refresh-interval"
+            value={refreshInterval}
+            onChange={(event) => setRefreshInterval(Number(event.target.value))}
+            disabled={!autoRefresh}
+            className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {refreshOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={refetchAll}
+            disabled={isRefreshing}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={14} aria-hidden="true" className={isRefreshing ? 'animate-spin text-blue-600' : 'text-slate-500'} />
+            {isRefreshing ? '刷新中' : '立即刷新'}
+          </button>
+          <span className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 font-mono text-xs text-slate-500" aria-live="polite">
+            <Activity size={14} aria-hidden="true" className={isRefreshing ? 'text-blue-600' : 'text-slate-400'} />
+            {isRefreshing ? '正在同步监控数据' : fmtRefreshTime(lastUpdatedAt)}
+          </span>
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon={Gauge} label="总请求数" value={fmtCompact(summary.total)} detail={`${fmtNum(summary.errors)} 个失败请求`} tone={Number(errorRate) > 5 ? 'amber' : 'blue'} />
-        <MetricCard icon={AlertTriangle} label="错误率" value={`${errorRate}%`} detail={`平均延迟 ${fmtMs(summary.avg_duration_ms)}`} tone={Number(errorRate) > 5 ? 'red' : 'emerald'} />
-        <MetricCard icon={DatabaseZap} label="Token 用量" value={fmtCompact(totalTokens)} detail={`Cache 命中 ${cacheHit}`} tone="slate" />
-        <MetricCard icon={Server} label="Provider" value={`${enabledProviders}/${providerList.length}`} detail={`${fmtNum(stats?.mappings_count || 0)} 个已映射 model`} tone="amber" />
-      </section>
-
-      <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
-        <RequestTrend hourly={stats?.hourly || []} />
-        <Panel title="关键延迟" icon={Clock3}>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-            <LatencyItem label="平均 TTFT" value={fmtMs(summary.avg_ttft_ms)} />
-            <LatencyItem label="平均总耗时" value={fmtMs(summary.avg_duration_ms)} />
-            <LatencyItem label="输入 Token" value={fmtCompact(summary.input_tokens)} />
-            <LatencyItem label="输出 Token" value={fmtCompact(summary.output_tokens)} />
+      {(isUnavailable || hasRefreshError) && (
+        <div role="alert" className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <AlertTriangle size={17} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-700" />
+            <span>{isUnavailable ? `无法加载监控数据：${refreshError?.message || '请检查网关连接或登录令牌。'}` : `最新一次同步失败：${refreshError?.message || '正在保留上一次成功的数据。'}`}</span>
           </div>
-        </Panel>
-      </section>
+          <button type="button" onClick={refetchAll} className="shrink-0 self-start rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 sm:self-auto">重试</button>
+        </div>
+      )}
 
-      <section className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-        <Panel title="Provider 流量" icon={BarChart3}>
-          <ProviderBars providers={stats?.by_provider || []} />
-        </Panel>
-        <Panel title="最近请求" icon={Zap}>
-          <RecentActivity recent={stats?.recent || []} />
-        </Panel>
-      </section>
+      {isInitialLoading && <DashboardLoading />}
+      {isUnavailable && <DashboardUnavailable onRetry={refetchAll} />}
 
-      <Checklist providers={providerList} mappingsCount={stats?.mappings_count || 0} summary={summary} />
+      {!isInitialLoading && !isUnavailable && (
+        <>
+          <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard icon={Gauge} label="总请求数" value={fmtCompact(summary.total)} detail={`${fmtNum(summary.errors)} 个失败请求`} tone={Number(errorRate) > 5 ? 'amber' : 'blue'} />
+            <MetricCard icon={AlertTriangle} label="错误率" value={`${errorRate}%`} detail={`平均延迟 ${fmtMs(summary.avg_duration_ms)}`} tone={Number(errorRate) > 5 ? 'red' : 'emerald'} />
+            <MetricCard icon={DatabaseZap} label="Token 用量" value={fmtCompact(totalTokens)} detail={`Cache 命中 ${cacheHit}`} tone="slate" />
+            <MetricCard icon={Server} label="Provider" value={`${enabledProviders}/${providerList.length}`} detail={`${fmtNum(stats?.mappings_count || 0)} 个已映射 model`} tone="amber" />
+          </section>
+
+          <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+            <RequestTrend trend={stats?.trend || []} range={trendRange} onRangeChange={setTrendRange} />
+            <Panel title="关键延迟" icon={Clock3}>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <LatencyItem label="平均 TTFT" value={fmtMs(summary.avg_ttft_ms)} />
+                <LatencyItem label="平均总耗时" value={fmtMs(summary.avg_duration_ms)} />
+                <LatencyItem label="输入 Token" value={fmtCompact(summary.input_tokens)} />
+                <LatencyItem label="输出 Token" value={fmtCompact(summary.output_tokens)} />
+              </div>
+            </Panel>
+          </section>
+
+          <section className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
+            <Panel title="Provider 流量" icon={BarChart3}>
+              <ProviderBars providers={stats?.by_provider || []} />
+            </Panel>
+            <Panel title="最近请求" icon={Zap}>
+              <RecentActivity recent={stats?.recent || []} />
+            </Panel>
+          </section>
+
+          <Checklist providers={providerList} mappingsCount={stats?.mappings_count || 0} summary={summary} />
+        </>
+      )}
     </div>
   )
 }
+
+const DashboardLoading = () => (
+  <div className="space-y-5" aria-label="正在加载监控数据" aria-busy="true">
+    <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      {[0, 1, 2, 3].map((item) => (
+        <div key={item} className="h-32 animate-pulse rounded-lg border border-slate-200 bg-white p-4">
+          <div className="h-3 w-20 rounded bg-slate-200" />
+          <div className="mt-4 h-8 w-24 rounded bg-slate-200" />
+          <div className="mt-5 h-3 w-36 rounded bg-slate-100" />
+        </div>
+      ))}
+    </section>
+    <section className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+      {[0, 1].map((item) => <div key={item} className="h-72 animate-pulse rounded-lg border border-slate-200 bg-white p-5"><div className="h-4 w-32 rounded bg-slate-200" /><div className="mt-6 h-48 rounded bg-slate-100" /></div>)}
+    </section>
+  </div>
+)
+
+const DashboardUnavailable = ({ onRetry }) => (
+  <div className="rounded-lg border border-dashed border-slate-300 bg-white px-5 py-14 text-center">
+    <AlertTriangle size={24} aria-hidden="true" className="mx-auto text-amber-600" />
+    <h2 className="mt-3 text-base font-semibold text-slate-950">监控数据暂不可用</h2>
+    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">检查网关是否正在运行，以及当前令牌是否仍然有效后再试。</p>
+    <button type="button" onClick={onRetry} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-700">重新加载</button>
+  </div>
+)
 
 const Panel = ({ title, icon: Icon, aside, children }) => (
   <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">

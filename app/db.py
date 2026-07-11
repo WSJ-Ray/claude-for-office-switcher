@@ -6,6 +6,7 @@ from datetime import timedelta, timezone
 from typing import Optional
 
 from .config import DB_PATH
+from .providers import is_supported_provider_format
 
 TZ_SQL = '+8 hours'
 TZ = timezone(timedelta(hours=8))
@@ -186,9 +187,11 @@ def set_default_provider(provider_id: int) -> None:
 
 
 def list_mappings() -> list[dict]:
+    """Return mappings with provider and runtime routing state for the admin UI."""
     with _lock, get_conn() as conn:
         rows = conn.execute(
-            "SELECT m.*, p.name AS provider_name, p.format AS provider_format "
+            "SELECT m.*, p.name AS provider_name, p.format AS provider_format, "
+            "p.enabled AS provider_enabled, p.is_default AS provider_is_default "
             "FROM model_mappings m JOIN providers p ON m.provider_id=p.id "
             "ORDER BY m.client_model, m.priority ASC, m.id"
         ).fetchall()
@@ -196,8 +199,52 @@ def list_mappings() -> list[dict]:
     for r in rows:
         d = dict(r)
         d["enabled"] = bool(d["enabled"])
+        d["provider_enabled"] = bool(d["provider_enabled"])
+        d["provider_is_default"] = bool(d["provider_is_default"])
+        d["provider_format_supported"] = is_supported_provider_format(d["provider_format"])
+        d["routable"] = d["enabled"] and d["provider_enabled"] and d["provider_format_supported"]
+        d["route_source"] = "mapping" if d["routable"] else None
+        if not d["enabled"]:
+            d["not_routable_reason"] = "mapping_disabled"
+        elif not d["provider_enabled"]:
+            d["not_routable_reason"] = "provider_disabled"
+        elif not d["provider_format_supported"]:
+            d["not_routable_reason"] = "unsupported_provider_format"
+        else:
+            d["not_routable_reason"] = None
         out.append(d)
     return out
+
+
+def list_mapping_candidates(client_model: str) -> list[dict]:
+    """Return every mapping for a model, including excluded routing candidates."""
+    with _lock, get_conn() as conn:
+        rows = conn.execute(
+            "SELECT m.*, p.name AS provider_name, p.format AS provider_format, "
+            "p.enabled AS provider_enabled, p.is_default AS provider_is_default "
+            "FROM model_mappings m JOIN providers p ON m.provider_id=p.id "
+            "WHERE m.client_model=? ORDER BY m.priority ASC, m.id ASC",
+            (client_model,),
+        ).fetchall()
+    candidates = []
+    for r in rows:
+        d = dict(r)
+        d["enabled"] = bool(d["enabled"])
+        d["provider_enabled"] = bool(d["provider_enabled"])
+        d["provider_is_default"] = bool(d["provider_is_default"])
+        d["provider_format_supported"] = is_supported_provider_format(d["provider_format"])
+        d["routable"] = d["enabled"] and d["provider_enabled"] and d["provider_format_supported"]
+        d["route_source"] = "mapping" if d["routable"] else None
+        if not d["enabled"]:
+            d["exclusion_reason"] = "mapping_disabled"
+        elif not d["provider_enabled"]:
+            d["exclusion_reason"] = "provider_disabled"
+        elif not d["provider_format_supported"]:
+            d["exclusion_reason"] = "unsupported_provider_format"
+        else:
+            d["exclusion_reason"] = None
+        candidates.append(d)
+    return candidates
 
 
 def find_mappings_by_client_model(client_model: str) -> list[dict]:
@@ -262,6 +309,41 @@ def update_mapping(mapping_id: int, m: dict) -> None:
     values.append(mapping_id)
     with _lock, get_conn() as conn:
         conn.execute(f"UPDATE model_mappings SET {', '.join(fields)} WHERE id=?", values)
+
+
+
+def reorder_mappings(client_model: str, mapping_ids: list[int]) -> list[dict]:
+    """Atomically validate and normalize one model's routing order.
+
+    The supplied IDs must contain every mapping in the client-model group
+    exactly once. This prevents a partial priority swap from leaving an
+    inconsistent failover queue when a request fails between two updates.
+    """
+    expected_ids = set(mapping_ids)
+    if len(expected_ids) != len(mapping_ids):
+        raise ValueError("mapping_ids must not contain duplicates")
+
+    with _lock, get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id FROM model_mappings WHERE client_model=? ORDER BY priority, id",
+            (client_model,),
+        ).fetchall()
+        actual_ids = {row["id"] for row in rows}
+        if expected_ids != actual_ids:
+            raise ValueError(
+                "mapping_ids must include every mapping for client_model exactly once"
+            )
+
+        for priority, mapping_id in enumerate(mapping_ids):
+            conn.execute(
+                "UPDATE model_mappings SET priority=? WHERE id=?",
+                (priority, mapping_id),
+            )
+
+    return [
+        mapping for mapping in list_mappings()
+        if mapping["client_model"] == client_model
+    ]
 
 
 def delete_mapping(mapping_id: int) -> None:
@@ -367,6 +449,67 @@ def stats_hourly(hours: int = 24) -> list[dict]:
             buckets[r["h"]]["total_input_tokens"] = r["ti"]
             buckets[r["h"]]["cache_w"] = r["cw"]
             buckets[r["h"]]["cache_r"] = r["cr"]
+    return list(buckets.values())
+
+
+def stats_trend(range_key: str = "24h", now=None) -> list[dict]:
+    """Aggregate dashboard requests into complete local-time hour or day buckets."""
+    from datetime import datetime
+
+    ranges = {
+        "24h": (24, "hour", "%Y-%m-%d %H", "%H:00"),
+        "7d": (7, "day", "%Y-%m-%d", "%m-%d"),
+        "30d": (30, "day", "%Y-%m-%d", "%m-%d"),
+    }
+    count, unit, key_format, label_format = ranges[range_key]
+    now = now or datetime.now(TZ)
+    if unit == "hour":
+        current = now.replace(minute=0, second=0, microsecond=0)
+        step = timedelta(hours=1)
+        group_length = 13
+    else:
+        current = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        step = timedelta(days=1)
+        group_length = 10
+    start = current - step * (count - 1)
+
+    buckets = {}
+    for i in range(count):
+        bucket_time = start + step * i
+        key = bucket_time.strftime(key_format)
+        buckets[key] = {
+            "label": bucket_time.strftime(label_format),
+            "count": 0,
+            "errors": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_input_tokens": 0,
+            "cache_w": 0,
+            "cache_r": 0,
+        }
+
+    start_utc = start.astimezone(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    with _lock, get_conn() as conn:
+        rows = conn.execute(
+            "SELECT substr(datetime(ts, ?), 1, ?) h, COUNT(*) c, "
+            "SUM(CASE WHEN status>=400 OR error IS NOT NULL THEN 1 ELSE 0 END) e, "
+            "COALESCE(SUM(input_tokens), 0) i, COALESCE(SUM(output_tokens), 0) o, "
+            "COALESCE(SUM(total_input_tokens), 0) ti, "
+            "COALESCE(SUM(cache_w), 0) cw, COALESCE(SUM(cache_r), 0) cr "
+            "FROM request_logs WHERE ts >= ? GROUP BY h",
+            (TZ_SQL, group_length, start_utc),
+        ).fetchall()
+    for row in rows:
+        if row["h"] not in buckets:
+            continue
+        bucket = buckets[row["h"]]
+        bucket["count"] = row["c"]
+        bucket["errors"] = row["e"]
+        bucket["input_tokens"] = row["i"]
+        bucket["output_tokens"] = row["o"]
+        bucket["total_input_tokens"] = row["ti"]
+        bucket["cache_w"] = row["cw"]
+        bucket["cache_r"] = row["cr"]
     return list(buckets.values())
 
 

@@ -15,8 +15,9 @@ from ..schemas import (
     MappingIn,
     MappingUpdate,
     PreviewModelsIn,
+    MappingReorderIn,
 )
-from ..providers import REGISTRY
+from ..providers import REGISTRY, list_provider_capabilities
 
 router = APIRouter(prefix="/admin")
 
@@ -34,6 +35,40 @@ def _mask_key(p: dict) -> dict:
     elif k:
         out["api_key"] = "*" * len(k)
     return out
+
+
+def _is_masked_key(value: str | None) -> bool:
+    return bool(value) and "*" in value
+
+
+def _is_placeholder_key(value: str | None) -> bool:
+    return value == "" or _is_masked_key(value)
+
+
+def _model_ids(models: list[dict]) -> list[str]:
+    return [m["id"] for m in models if m.get("id")]
+
+def _discovery_metadata() -> dict:
+    return {
+        "operation": "model_discovery",
+        "end_to_end": False,
+        "verifies": ["upstream model-list access", "authentication for that endpoint"],
+        "does_not_verify": ["model mappings", "message translation", "streaming response"],
+    }
+
+
+@router.get("/provider-capabilities")
+async def provider_capabilities(request: Request):
+    """Return the provider formats currently registered by the runtime."""
+    verify_auth(request)
+    return {"data": list_provider_capabilities()}
+
+
+@router.get("/auth-check")
+async def auth_check(request: Request):
+    """Validate a saved gateway token without changing server state."""
+    verify_auth(request)
+    return {"ok": True}
 
 
 @router.get("/providers")
@@ -61,6 +96,8 @@ async def update_provider(pid: int, payload: ProviderUpdate, request: Request):
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not db.get_provider(pid):
         raise HTTPException(404, "Provider not found")
+    if _is_placeholder_key(data.get("api_key")):
+        data.pop("api_key", None)
     db.update_provider(pid, data)
     model_cache.invalidate(pid)
     if data.get("is_default"):
@@ -85,17 +122,31 @@ async def test_provider(pid: int, request: Request):
         raise HTTPException(404, "Provider not found")
 
     cached = model_cache.get(pid)
-    if cached is not None:
-        return {"ok": True, "models": len(cached), "latency_ms": 0, "cached": True}
+    if cached:
+        return {
+            "ok": True,
+            "models": len(cached),
+            "latency_ms": 0,
+            "cached": True,
+            "metadata": _discovery_metadata(),
+        }
 
     from ..providers import get_adapter
     t0 = time.time()
     try:
         adapter = get_adapter(p)
         models = await adapter.list_models()
-        result = [m["id"] for m in models if m.get("id")]
+        result = _model_ids(models)
+        if not result:
+            raise RuntimeError("未获取到模型列表")
         model_cache.set(pid, result)
-        return {"ok": True, "models": len(result), "latency_ms": int((time.time() - t0) * 1000), "cached": False}
+        return {
+            "ok": True,
+            "models": len(result),
+            "latency_ms": int((time.time() - t0) * 1000),
+            "cached": False,
+            "metadata": _discovery_metadata(),
+        }
     except Exception as e:
         raise HTTPException(502, f"Test failed: {e}")
 
@@ -109,14 +160,16 @@ async def provider_models(pid: int, request: Request):
         raise HTTPException(404, "Provider not found")
 
     cached = model_cache.get(pid)
-    if cached is not None:
+    if cached:
         return {"ok": True, "models": cached, "cached": True}
 
     from ..providers import get_adapter
     try:
         adapter = get_adapter(p)
         models = await adapter.list_models()
-        result = [m["id"] for m in models if m.get("id")]
+        result = _model_ids(models)
+        if not result:
+            return {"ok": False, "error": "未获取到模型列表", "models": []}
         model_cache.set(pid, result)
         return {"ok": True, "models": result, "cached": False}
     except Exception as e:
@@ -131,9 +184,15 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
     if fmt not in REGISTRY:
         raise HTTPException(400, f"Unsupported format: {fmt}")
 
-    cache_key = f"{fmt}|{payload.base_url}|{payload.api_key}"
+    api_key = payload.api_key
+    if _is_placeholder_key(api_key) and payload.provider_id:
+        saved = db.get_provider(payload.provider_id)
+        if saved:
+            api_key = saved["api_key"]
+
+    cache_key = f"{fmt}|{payload.base_url}|{api_key}"
     cached = model_cache.get_preview(cache_key)
-    if cached is not None:
+    if cached:
         return {"ok": True, "models": cached, "latency_ms": 0, "cached": True}
 
     from ..providers import get_adapter
@@ -142,7 +201,7 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
         "name": "preview",
         "format": fmt,
         "base_url": payload.base_url,
-        "api_key": payload.api_key,
+        "api_key": api_key,
         "enabled": True,
         "is_default": False,
         "extra_config": payload.extra_config,
@@ -152,7 +211,9 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
     try:
         adapter = get_adapter(cfg)
         models = await adapter.list_models()
-        result = [m["id"] for m in models]
+        result = _model_ids(models)
+        if not result:
+            return {"ok": False, "error": "未获取到模型列表", "models": []}
         model_cache.set_preview(cache_key, result)
         return {
             "ok": True,
@@ -162,6 +223,62 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
         }
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
+
+
+@router.get("/routes/preflight")
+async def route_preflight(client_model: str, request: Request):
+    """Explain the exact routing decision without calling an upstream API."""
+    verify_auth(request)
+    normalized_model = (client_model or "").strip()
+    if not normalized_model:
+        raise HTTPException(400, "client_model is required")
+
+    mappings = db.list_mapping_candidates(normalized_model)
+    candidates = []
+    exclusions = []
+    for mapping in mappings:
+        item = {
+            "mapping_id": mapping["id"],
+            "provider_id": mapping["provider_id"],
+            "provider_name": mapping["provider_name"],
+            "provider_format": mapping["provider_format"],
+            "upstream_model": mapping["upstream_model"],
+            "priority": mapping["priority"],
+            "mapping_enabled": mapping["enabled"],
+            "provider_enabled": mapping["provider_enabled"],
+            "provider_format_supported": mapping["provider_format_supported"],
+            "is_default_provider": mapping["provider_is_default"],
+            "source": "mapping",
+        }
+        if mapping["routable"]:
+            candidates.append(item)
+        else:
+            item["reason"] = mapping["exclusion_reason"]
+            exclusions.append(item)
+
+    default_route = None
+    if not candidates:
+        default_provider = db.get_default_provider()
+        if default_provider:
+            default_route = {
+                "provider_id": default_provider["id"],
+                "provider_name": default_provider["name"],
+                "provider_format": default_provider["format"],
+                "upstream_model": normalized_model,
+                "source": "default",
+                "is_default_provider": True,
+            }
+            candidates.append(default_route)
+
+    return {
+        "client_model": normalized_model,
+        "candidates": candidates,
+        "exclusions": exclusions,
+        "used_default": default_route is not None,
+        "default_route": default_route,
+        "routable": bool(candidates),
+        "reason": None if candidates else "no_enabled_mapping_or_default_provider",
+    }
 
 
 @router.get("/mappings")
@@ -178,6 +295,17 @@ async def create_mapping(payload: MappingIn, request: Request):
         raise HTTPException(400, "client_model 须包含 sonnet / opus / haiku 之一")
     mid = db.create_mapping(payload.model_dump())
     return {"id": mid}
+
+
+@router.put("/mappings/reorder")
+async def reorder_mappings(payload: MappingReorderIn, request: Request):
+    """Atomically set the full priority order for one client model."""
+    verify_auth(request)
+    try:
+        mappings = db.reorder_mappings(payload.client_model, payload.mapping_ids)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "data": mappings}
 
 
 @router.put("/mappings/{mid}")
@@ -200,8 +328,10 @@ async def delete_mapping(mid: int, request: Request):
 
 
 @router.get("/stats")
-async def stats(request: Request):
+async def stats(request: Request, range: str = "24h"):
     verify_auth(request)
+    if range not in {"24h", "7d", "30d"}:
+        raise HTTPException(422, "range must be one of: 24h, 7d, 30d")
     return {
         "summary": db.stats_summary(),
         "providers": [
@@ -209,7 +339,8 @@ async def stats(request: Request):
             for p in db.list_providers()
         ],
         "mappings_count": len(db.list_mappings()),
-        "hourly": db.stats_hourly(24),
+        "range": range,
+        "trend": db.stats_trend(range),
         "by_provider": db.stats_by_provider(),
         "recent": db.list_logs(limit=8, offset=0),
     }
@@ -237,6 +368,8 @@ def _mask_setting(value: str) -> str:
 @router.get("/settings")
 async def get_settings(request: Request):
     """读取系统设置（敏感字段掩码后返回）。"""
+    if db.has_gateway_token():
+        verify_auth(request)
     all_settings = db.get_all_settings()
     return {
         "gateway_token": _mask_setting(all_settings.get(db.SETTING_GATEWAY_TOKEN, "")),
