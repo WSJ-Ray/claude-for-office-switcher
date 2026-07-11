@@ -1,3 +1,5 @@
+import { getApiErrorMessage } from './office'
+
 const TOKEN_KEY = 'gateway_token'
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY) || ''
@@ -21,7 +23,10 @@ const api = async (path, opts = {}) => {
   if (!r.ok) {
     let detail = ''
     try { detail = (await r.json()).detail || '' } catch { detail = await r.text() }
-    throw new Error(detail || `${r.status}`)
+    const error = new Error(getApiErrorMessage(detail, `${r.status}`))
+    error.status = r.status
+    error.code = typeof detail === 'object' ? detail.code : undefined
+    throw error
   }
   return r.status === 204 ? null : r.json()
 }
@@ -38,3 +43,7 @@ export const getSetupStatus = () => api('/admin/setup-status')
 export const getSettings = () => api('/admin/settings')
 
 export const updateSettings = (data) => api('/admin/settings', { method: 'PUT', body: JSON.stringify(data) })
+
+export const getOfficeStatus = () => api('/admin/office/status')
+export const setupOffice = () => api('/admin/office/setup', { method: 'POST' })
+export const removeOffice = () => api('/admin/office/setup', { method: 'DELETE' })

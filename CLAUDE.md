@@ -25,12 +25,6 @@ cd web && npm run dev        # Vite on :5173, proxies /v1 /admin /health to loca
 cd web && npm run build      # outputs to ../static/
 ```
 
-**Docker:**
-```bash
-docker build -t office-gateway:latest .
-docker run -p 4000:4000 -e DEEPSEEK_API_KEY=sk-xxx -e GATEWAY_TOKEN=mytoken office-gateway:latest
-```
-
 **Install deps:**
 ```bash
 pip install -r requirements.txt

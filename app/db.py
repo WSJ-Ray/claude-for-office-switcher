@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import secrets
 import threading
 from contextlib import contextmanager
 from datetime import timedelta, timezone
@@ -15,6 +16,7 @@ _lock = threading.Lock()
 
 # 设置项 key 常量
 SETTING_GATEWAY_TOKEN = "gateway_token"
+SETTING_OFFICE_BOOTSTRAP_SECRET = "office_bootstrap_secret"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS providers (
@@ -559,6 +561,31 @@ def set_setting(key: str, value: str) -> None:
             "INSERT INTO settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+def get_or_create_office_bootstrap_secret() -> str:
+    """Return the stable Office bootstrap secret, creating it atomically once."""
+    with _lock, get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?",
+            (SETTING_OFFICE_BOOTSTRAP_SECRET,),
+        ).fetchone()
+        if row is not None:
+            return row["value"]
+
+        candidate = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)",
+            (SETTING_OFFICE_BOOTSTRAP_SECRET, candidate),
+        )
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key=?",
+            (SETTING_OFFICE_BOOTSTRAP_SECRET,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Office bootstrap secret could not be persisted")
+        return row["value"]
 
 
 def get_all_settings() -> dict:

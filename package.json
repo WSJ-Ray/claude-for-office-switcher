@@ -6,5 +6,8 @@
     "dev": "npm --prefix web run dev",
     "build": "npm --prefix web run build",
     "preview": "npm --prefix web run preview"
+  },
+  "dependencies": {
+    "recharts": "^3.9.2"
   }
 }

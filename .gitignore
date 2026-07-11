@@ -16,6 +16,7 @@ litellm_config.yaml
 # ===== 调试/一次性脚本 =====
 analyze_*.py
 test_*.py
+!tests/test_desktop_launcher.py
 check_*.py
 
 # ===== 环境变量与密钥 =====
@@ -70,3 +71,20 @@ web/node_modules/
 web/dist/
 static/
 web/.vite/
+
+# ===== Impeccable =====
+.impeccable/config.local.json
+.impeccable/hook.cache.json
+.impeccable/hook.pending.json
+.impeccable/*.png
+.impeccable/live/server.json
+.impeccable/live/sessions/
+.impeccable/live/previews/
+.impeccable/live/annotations/
+.impeccable/live/cache/
+.impeccable/live/manual-edit-apply-transaction.json
+.impeccable/live/manual-edit-events.jsonl
+.impeccable/live/manual-edit-evidence/
+.impeccable/live/pending-manual-edits.json
+.impeccable/live/deferred-svelte-component-accepts.json
+.impeccable/live/*.png

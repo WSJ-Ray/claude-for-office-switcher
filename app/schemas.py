@@ -1,12 +1,28 @@
-from typing import Optional, Literal
-from pydantic import BaseModel, Field
+from typing import Optional
+from pydantic import BaseModel, Field, field_validator
 
-Format = Literal["anthropic", "openai_chat", "openai_responses", "vertex"]
+from .providers import is_supported_provider_format, supported_provider_formats
 
 
-class ProviderIn(BaseModel):
+class ProviderFormatModel(BaseModel):
+    """Validate provider formats against the runtime adapter registry."""
+
+    @field_validator("format", check_fields=False)
+    @classmethod
+    def validate_format(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not is_supported_provider_format(value):
+            supported = ", ".join(supported_provider_formats())
+            raise ValueError(
+                f"Unsupported provider format: {value}. Supported: {supported}"
+            )
+        return value
+
+
+class ProviderIn(ProviderFormatModel):
     name: str
-    format: Format
+    format: str
     base_url: str
     api_key: str
     enabled: bool = True
@@ -14,9 +30,9 @@ class ProviderIn(BaseModel):
     extra_config: dict = Field(default_factory=dict)
 
 
-class ProviderUpdate(BaseModel):
+class ProviderUpdate(ProviderFormatModel):
     name: Optional[str] = None
-    format: Optional[Format] = None
+    format: Optional[str] = None
     base_url: Optional[str] = None
     api_key: Optional[str] = None
     enabled: Optional[bool] = None
@@ -34,6 +50,11 @@ class ProviderOut(BaseModel):
     is_default: bool
     extra_config: dict
     created_at: str
+
+
+class MappingReorderIn(BaseModel):
+    client_model: str
+    mapping_ids: list[int]
 
 
 class MappingIn(BaseModel):
@@ -62,8 +83,9 @@ class MappingOut(BaseModel):
     provider_format: str
 
 
-class PreviewModelsIn(BaseModel):
-    format: Format
+class PreviewModelsIn(ProviderFormatModel):
+    provider_id: Optional[int] = None
+    format: str
     base_url: str
     api_key: str
     extra_config: dict = Field(default_factory=dict)

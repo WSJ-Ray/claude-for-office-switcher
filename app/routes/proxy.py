@@ -15,7 +15,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from .. import db
 from ..auth import verify_auth
-from ..providers import get_adapter
+from ..providers import get_adapter, is_supported_provider_format
 
 router = APIRouter()
 
@@ -32,11 +32,11 @@ def _resolve_candidates(client_model: str) -> list[tuple[dict, str]]:
     cands: list[tuple[dict, str]] = []
     for m in db.find_mappings_by_client_model(client_model):
         p = db.get_provider(m["provider_id"])
-        if p and p["enabled"]:
+        if p and p["enabled"] and is_supported_provider_format(p["format"]):
             cands.append((p, m["upstream_model"]))
     if not cands:
         p = db.get_default_provider()
-        if p:
+        if p and p["enabled"] and is_supported_provider_format(p["format"]):
             cands.append((p, client_model))
     return cands
 
@@ -49,7 +49,7 @@ async def list_models(request: Request):
     seen: set[str] = set()
     data = []
     for m in mappings:
-        if not m["enabled"] or m["client_model"] in seen:
+        if not m["enabled"] or not m.get("provider_enabled", True) or not is_supported_provider_format(m["provider_format"]) or m["client_model"] in seen:
             continue
         seen.add(m["client_model"])
         data.append(

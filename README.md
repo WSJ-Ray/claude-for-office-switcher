@@ -36,7 +36,6 @@
 - **格式自动转换** — Anthropic ↔ OpenAI Chat Completions 双向翻译
 - **流式 SSE 转发** — 真正的流式响应，避免超时
 - **管理面板** — 网页仪表盘，管理供应商、模型映射、查看日志和统计
-- **Docker 一键部署** — 单容器运行，开箱即用
 
 ## 快速开始
 
@@ -45,7 +44,6 @@
 | 环境 | 要求 |
 |------|------|
 | Git | 用于克隆仓库 |
-| Docker（推荐） | 任意支持 Docker 的 Linux/Windows/macOS 环境 |
 | 或 Python 3.10+ | 手动运行时需要 |
 | 或 Node.js 20+ | 前端开发时需要 |
 
@@ -56,27 +54,7 @@ git clone https://github.com/DearMJZ-2U/deepseek-office-gateway.git
 cd deepseek-office-gateway
 ```
 
-### 2. 选择部署方式
-
-#### 方式一：Docker 部署（推荐）
-
-无需安装 Python 和 Node.js，一条命令启动。
-
-```bash
-# 构建镜像
-docker build -t llm-office-gateway:latest .
-
-# 启动容器（挂载 data 目录持久化配置）
-docker run -d \
-  --name office-gateway \
-  -p 4000:4000 \
-  -e GATEWAY_TOKEN=my_token \
-  -e DEEPSEEK_API_KEY=sk-xxx \
-  -v ./data:/app/data \
-  llm-office-gateway:latest
-```
-
-#### 方式二：手动启动
+### 2. 本机启动
 
 ##### 后端
 
@@ -201,7 +179,6 @@ Claude Office 插件只识别包含 `sonnet`、`opus`、`haiku` 的模型 ID，�
 │       └── lib/                # API 请求、工具函数
 ├── static/                     # 前端构建产物
 ├── data/                       # SQLite 数据文件
-├── Dockerfile                  # 多阶段 Docker 构建
 └── requirements.txt            # Python 依赖
 ```
 
@@ -240,10 +217,6 @@ A: 检查网络连接和供应商 API 可用性，可在管理面板减小超时
 **Q: 如何添加新供应商？**
 
 A: 在管理面板的"供应商管理"中添加，选择对应的 API 格式，然后配置模型映射。
-
-**Q: 部署到公网服务器？**
-
-A: Docker 部署后修改 `gateway.py` 的 CORS 白名单，设置强密码的 `GATEWAY_TOKEN`。
 
 ## 未来开发方向
 

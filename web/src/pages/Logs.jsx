@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowRight, Check, ChevronDown, ChevronRight, Search } from 'lucide-react'
+import { AlertTriangle, ArrowRight, ChevronDown, ChevronRight, RefreshCw, Search } from 'lucide-react'
 import { get } from '../lib/api'
 
 const fmtTime = (ts) => (ts ? String(ts).slice(11, 19) : '-')
@@ -17,22 +17,52 @@ const dotOf = (name) => {
   return 'bg-emerald-500'
 }
 
+const PAGE_SIZE = 25
+const refreshOptions = [
+  { value: 10_000, label: '每 10 秒' },
+  { value: 30_000, label: '每 30 秒' },
+  { value: 60_000, label: '每 60 秒' }
+]
+
+const fmtRefreshTime = (timestamp) => {
+  if (!timestamp) return '等待首次加载'
+  return '上次更新 ' + new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+const normalizeLogs = (response) => {
+  const data = Array.isArray(response) ? response : Array.isArray(response?.data) ? response.data : []
+  const candidate = response?.meta?.total ?? response?.pagination?.total ?? response?.total
+  const total = Number(candidate)
+  return { data, total: Number.isFinite(total) && total >= data.length ? total : data.length }
+}
+
 export default function Logs() {
+  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [provider, setProvider] = useState('all')
   const [status, setStatus] = useState('all')
+  const [page, setPage] = useState(1)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshInterval, setRefreshInterval] = useState(30_000)
   const [expandedIds, setExpandedIds] = useState({})
   const toggleExpand = (id) => setExpandedIds((prev) => ({ ...prev, [id]: !prev[id] }))
-  const { data } = useQuery({
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 220)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
+
+  const { data, isLoading, isFetching, isError, error, dataUpdatedAt, refetch } = useQuery({
     queryKey: ['logs'],
-    queryFn: () => get('/admin/logs?limit=200'),
-    refetchInterval: 5000
+    queryFn: () => get('/admin/logs?limit=200&offset=0'),
+    refetchInterval: autoRefresh ? refreshInterval : false,
+    refetchIntervalInBackground: false
   })
 
-  const all = data?.data || []
-  const providerOptions = ['all', ...Array.from(new Set(all.map((log) => log.provider_name).filter(Boolean)))]
-
-  const logs = all.filter((log) => {
+  const result = useMemo(() => normalizeLogs(data), [data])
+  const all = result.data
+  const providerOptions = useMemo(() => ['all', ...Array.from(new Set(all.map((log) => log.provider_name).filter(Boolean)))], [all])
+  const filteredLogs = useMemo(() => all.filter((log) => {
     if (provider !== 'all' && log.provider_name !== provider) return false
     if (status === 'success' && isErr(log)) return false
     if (status === 'error' && !isErr(log)) return false
@@ -42,94 +72,210 @@ export default function Logs() {
       if (!hay.includes(query)) return false
     }
     return true
-  })
+  }), [all, provider, search, status])
+
+  useEffect(() => {
+    setPage(1)
+  }, [provider, search, status])
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const visibleLogs = filteredLogs.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+  const hasFilters = Boolean(searchInput || provider !== 'all' || status !== 'all')
+  const hasFatalError = isError && !data
+  const hasRefreshError = isError && Boolean(data)
+  const resultLabel = result.total > all.length
+    ? '当前已载入 ' + all.length + ' / 共 ' + result.total + ' 条'
+    : '显示 ' + filteredLogs.length + ' / ' + all.length + ' 条'
+
+  const clearFilters = () => {
+    setSearchInput('')
+    setSearch('')
+    setProvider('all')
+    setStatus('all')
+  }
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
-      <PageHeader
-        eyebrow="Logs"
-        title="请求日志"
-        desc="实时请求记录：耗时、TTFT、Token、Cache 与错误信息。"
-      />
-
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 md:w-96">
-          <Search size={16} className="text-slate-500" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索 model / Provider / upstream / 错误"
-            className="min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-400"
-          />
+      <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 xl:flex-row xl:items-end">
+        <PageHeader
+          eyebrow="Logs"
+          title="请求日志"
+          desc="查看请求耗时、TTFT、Token、Cache 与错误信息；筛选仅作用于当前已载入的记录。"
+        />
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => setAutoRefresh(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            自动刷新
+          </label>
+          <label className="sr-only" htmlFor="logs-refresh-interval">自动刷新间隔</label>
+          <select
+            id="logs-refresh-interval"
+            value={refreshInterval}
+            onChange={(event) => setRefreshInterval(Number(event.target.value))}
+            disabled={!autoRefresh}
+            className="min-h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {refreshOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw size={14} aria-hidden="true" className={isFetching ? 'animate-spin text-blue-600' : 'text-slate-500'} />
+            {isFetching ? '刷新中' : '立即刷新'}
+          </button>
+          <span className="flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 font-mono text-xs text-slate-500" aria-live="polite">
+            <span className={isFetching ? 'h-1.5 w-1.5 rounded-full bg-blue-500' : 'h-1.5 w-1.5 rounded-full bg-slate-400'} />
+            {isFetching ? '正在同步日志' : fmtRefreshTime(dataUpdatedAt)}
+          </span>
         </div>
-        <Dropdown value={provider} onChange={setProvider} options={providerOptions} labelOf={(value) => (value === 'all' ? '全部 Provider' : value)} />
-        <Dropdown value={status} onChange={setStatus} options={['all', 'success', 'error']} labelOf={(value) => ({ all: '全部状态', success: '成功', error: '错误' }[value])} />
-        <span className="ml-auto font-mono text-xs text-slate-500">{logs.length} / {all.length} 条</span>
       </div>
 
-      <div className="hidden overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm md:block">
-        <div className="overflow-x-auto">
-          <div className="min-w-[1160px]">
-            <div className="grid grid-cols-[36px_110px_130px_250px_minmax(220px,1fr)_80px_90px_140px_90px_90px] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-              <div />
-              <div>时间</div>
-              <div>Provider</div>
-              <div>客户端 model</div>
-              <div>upstream model</div>
-              <div>TTFT</div>
-              <div>总耗时</div>
-              <div>Token 入/出</div>
-              <div>Cache</div>
-              <div>状态</div>
-            </div>
+      {hasRefreshError && (
+        <div role="alert" className="flex flex-col gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2"><AlertTriangle size={17} aria-hidden="true" className="mt-0.5 shrink-0 text-amber-700" /><span>最新一次日志同步失败：{error?.message || '正在显示上一次成功加载的数据。'}</span></div>
+          <button type="button" onClick={() => void refetch()} className="self-start rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 sm:self-auto">重试</button>
+        </div>
+      )}
 
-            {logs.length === 0 && <div className="px-5 py-12 text-center text-sm text-slate-500">暂无请求记录</div>}
-
-            {logs.map((log) => (
-              <LogRow
-                key={log.id}
-                log={log}
-                expanded={!!expandedIds[log.id]}
-                onToggle={() => toggleExpand(log.id)}
-              />
-            ))}
+      <section className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 sm:p-4" aria-label="日志筛选">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="flex w-full items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 lg:max-w-md">
+            <Search size={16} aria-hidden="true" className="shrink-0 text-slate-500" />
+            <label className="sr-only" htmlFor="logs-search">搜索请求日志</label>
+            <input
+              id="logs-search"
+              type="search"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="搜索 model / Provider / upstream / 错误"
+              className="min-w-0 flex-1 bg-transparent text-sm text-slate-950 outline-none placeholder:text-slate-400"
+            />
           </div>
-        </div>
-      </div>
-
-      <div className="grid gap-3 md:hidden">
-        {logs.length === 0 && <div className="rounded-lg border border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-500">暂无请求记录</div>}
-        {logs.map((log) => {
-          const expanded = !!expandedIds[log.id]
-          return (
-            <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-              <button type="button" onClick={() => toggleExpand(log.id)} className="w-full cursor-pointer text-left">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`h-1.5 w-1.5 rounded-full ${dotOf(log.provider_name)}`} />
-                      <span className="truncate text-sm font-medium text-slate-950">{log.provider_name || '-'}</span>
-                      <span className="font-mono text-xs text-slate-500">{fmtTime(log.ts)}</span>
-                    </div>
-                    <div className="mt-2 truncate font-mono text-xs text-slate-600">{log.client_model || '-'}</div>
-                    <div className="mt-1 truncate font-mono text-xs text-slate-500">{log.upstream_model || '-'}</div>
-                  </div>
-                  <StatusBadge log={log} />
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-                  <span>TTFT {fmtMs(log.ttft_ms)}</span>
-                  <span>总耗时 {fmtMs(log.duration_ms)}</span>
-                  <span>Token {log.input_tokens || 0}/{log.output_tokens || 0}</span>
-                </div>
-              </button>
-              {expanded && <ExpandedLog log={log} />}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:items-center">
+            <div>
+              <label className="sr-only" htmlFor="logs-provider">Provider 筛选</label>
+              <select id="logs-provider" value={provider} onChange={(event) => setProvider(event.target.value)} className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 lg:min-w-40">
+                <option value="all">全部 Provider</option>
+                {providerOptions.filter((value) => value !== 'all').map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
             </div>
-          )
-        })}
-      </div>
+            <div>
+              <label className="sr-only" htmlFor="logs-status">状态筛选</label>
+              <select id="logs-status" value={status} onChange={(event) => setStatus(event.target.value)} className="min-h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 lg:min-w-32">
+                <option value="all">全部状态</option>
+                <option value="success">成功</option>
+                <option value="error">错误</option>
+              </select>
+            </div>
+          </div>
+          {hasFilters && <button type="button" onClick={clearFilters} className="min-h-10 rounded-lg px-3 text-sm font-medium text-slate-600 transition-colors hover:bg-white hover:text-slate-950">清除筛选</button>}
+          <span className="lg:ml-auto whitespace-nowrap font-mono text-xs text-slate-500" aria-live="polite">{resultLabel}</span>
+        </div>
+      </section>
+
+      {isLoading && !data && <LogsLoading />}
+      {hasFatalError && <LogsUnavailable error={error} onRetry={() => void refetch()} />}
+
+      {!isLoading && !hasFatalError && (
+        <>
+          <div className="hidden overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm md:block" aria-busy={isFetching}>
+            <div className="overflow-x-auto">
+              <div className="min-w-[1160px]">
+                <div className="grid grid-cols-[36px_110px_130px_250px_minmax(220px,1fr)_80px_90px_140px_90px_90px] gap-4 border-b border-slate-200 bg-slate-50 px-5 py-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  <div aria-hidden="true" />
+                  <div>时间</div>
+                  <div>Provider</div>
+                  <div>客户端 model</div>
+                  <div>upstream model</div>
+                  <div>TTFT</div>
+                  <div>总耗时</div>
+                  <div>Token 入/出</div>
+                  <div>Cache</div>
+                  <div>状态</div>
+                </div>
+                {visibleLogs.length === 0 ? <LogsEmpty hasFilters={hasFilters} onClear={clearFilters} /> : visibleLogs.map((log) => <LogRow key={log.id} log={log} expanded={!!expandedIds[log.id]} onToggle={() => toggleExpand(log.id)} />)}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:hidden" aria-busy={isFetching}>
+            {visibleLogs.length === 0 && <LogsEmpty hasFilters={hasFilters} onClear={clearFilters} compact />}
+            {visibleLogs.map((log) => {
+              const expanded = !!expandedIds[log.id]
+              const detailId = 'mobile-log-detail-' + log.id
+              return (
+                <div key={log.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                  <button type="button" onClick={() => toggleExpand(log.id)} aria-expanded={expanded} aria-controls={detailId} className="w-full cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-1.5 w-1.5 rounded-full ${dotOf(log.provider_name)}`} />
+                          <span className="truncate text-sm font-medium text-slate-950">{log.provider_name || '-'}</span>
+                          <span className="font-mono text-xs text-slate-500">{fmtTime(log.ts)}</span>
+                        </div>
+                        <div className="mt-2 truncate font-mono text-xs text-slate-600">{log.client_model || '-'}</div>
+                        <div className="mt-1 truncate font-mono text-xs text-slate-500">{log.upstream_model || '-'}</div>
+                      </div>
+                      <StatusBadge log={log} />
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                      <span>TTFT {fmtMs(log.ttft_ms)}</span>
+                      <span>总耗时 {fmtMs(log.duration_ms)}</span>
+                      <span>Token {log.input_tokens || 0}/{log.output_tokens || 0}</span>
+                    </div>
+                  </button>
+                  {expanded && <div id={detailId}><ExpandedLog log={log} /></div>}
+                </div>
+              )
+            })}
+          </div>
+
+          {filteredLogs.length > PAGE_SIZE && (
+            <nav className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between" aria-label="日志分页">
+              <span className="text-sm text-slate-500">第 {safePage} / {totalPages} 页，每页 {PAGE_SIZE} 条</span>
+              <div className="flex items-center gap-2">
+                <button type="button" disabled={safePage === 1} onClick={() => setPage((current) => Math.max(1, current - 1))} className="min-h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">上一页</button>
+                <button type="button" disabled={safePage === totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))} className="min-h-9 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">下一页</button>
+              </div>
+            </nav>
+          )}
+        </>
+      )}
     </div>
   )
 }
+
+const LogsLoading = () => (
+  <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm" aria-label="正在加载请求日志" aria-busy="true">
+    {[0, 1, 2, 3, 4, 5].map((item) => <div key={item} className="flex animate-pulse items-center gap-4 border-b border-slate-100 px-5 py-4 last:border-b-0"><div className="h-3 w-16 rounded bg-slate-200" /><div className="h-3 w-24 rounded bg-slate-100" /><div className="h-3 flex-1 rounded bg-slate-100" /><div className="h-3 w-20 rounded bg-slate-100" /></div>)}
+  </div>
+)
+
+const LogsUnavailable = ({ error, onRetry }) => (
+  <div className="rounded-lg border border-dashed border-slate-300 bg-white px-5 py-14 text-center">
+    <AlertTriangle size={24} aria-hidden="true" className="mx-auto text-amber-600" />
+    <h2 className="mt-3 text-base font-semibold text-slate-950">请求日志暂不可用</h2>
+    <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">{error?.message || '无法连接到网关。请确认服务正在运行且登录令牌有效。'}</p>
+    <button type="button" onClick={onRetry} className="mt-5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-700">重新加载</button>
+  </div>
+)
+
+const LogsEmpty = ({ hasFilters, onClear, compact = false }) => (
+  <div className={compact ? 'rounded-lg border border-dashed border-slate-200 bg-white px-4 py-10 text-center' : 'px-5 py-12 text-center'}>
+    <p className="text-sm font-medium text-slate-700">{hasFilters ? '没有符合当前筛选条件的请求' : '暂无请求记录'}</p>
+    <p className="mt-1 text-sm text-slate-500">{hasFilters ? '尝试调整搜索词、Provider 或状态筛选。' : '网关收到请求后，记录会显示在这里。'}</p>
+    {hasFilters && <button type="button" onClick={onClear} className="mt-3 rounded-md px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-50">清除筛选</button>}
+  </div>
+)
 
 const LogRow = ({ log, expanded, onToggle }) => {
   const inputTokens = log.input_tokens || 0
@@ -142,6 +288,8 @@ const LogRow = ({ log, expanded, onToggle }) => {
         type="button"
         className={`grid w-full cursor-pointer grid-cols-[36px_110px_130px_250px_minmax(220px,1fr)_80px_90px_140px_90px_90px] items-center gap-4 border-b border-slate-200 px-5 py-3 text-left text-sm transition-colors hover:bg-slate-50 ${expanded ? 'bg-slate-50' : ''}`}
         onClick={onToggle}
+        aria-expanded={expanded}
+        aria-controls={`log-detail-${log.id}`}
       >
         <div>{expanded ? <ChevronDown size={15} className="text-slate-500" /> : <ChevronRight size={15} className="text-slate-400" />}</div>
         <div className="font-mono text-xs text-slate-500">{fmtTime(log.ts)}</div>
@@ -163,7 +311,7 @@ const LogRow = ({ log, expanded, onToggle }) => {
         <StatusBadge log={log} />
       </button>
       {expanded && (
-        <div className="border-b border-slate-200 bg-slate-50 px-8 py-5">
+        <div id={`log-detail-${log.id}`} className="border-b border-slate-200 bg-slate-50 px-8 py-5">
           <ExpandedLog log={log} />
         </div>
       )}
@@ -245,52 +393,6 @@ const Detail = ({ label, value, mono, danger, success }) => (
     <span className={`${mono ? 'font-mono' : ''} ${danger ? 'text-red-700' : success ? 'text-emerald-700' : 'text-slate-950'}`}>{value}</span>
   </div>
 )
-
-const Dropdown = ({ value, onChange, options, labelOf }) => {
-  const [open, setOpen] = useState(false)
-  const ref = useRef(null)
-  useEffect(() => {
-    if (!open) return
-    const onDown = (event) => {
-      if (ref.current && !ref.current.contains(event.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen((next) => !next)}
-        className="flex min-w-[150px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-700 transition-colors hover:bg-slate-50"
-      >
-        <span>{labelOf(value)}</span>
-        <ChevronDown size={14} className={`ml-auto text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="absolute z-20 mt-2 max-h-72 min-w-full overflow-auto rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
-          {options.map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => {
-                onChange(option)
-                setOpen(false)
-              }}
-              className={`flex w-full items-center justify-between gap-4 rounded-md px-3 py-2 text-left text-sm hover:bg-slate-50 ${
-                option === value ? 'text-blue-700' : 'text-slate-700'
-              }`}
-            >
-              <span>{labelOf(option)}</span>
-              {option === value && <Check size={14} />}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
 
 const PageHeader = ({ eyebrow, title, desc }) => (
   <div>

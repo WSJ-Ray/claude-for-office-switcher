@@ -6,17 +6,34 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.datastructures import MutableHeaders
 
 from app import db
 from app.config import STATIC_DIR
 from app.routes.proxy import router as proxy_router
 from app.routes.admin import router as admin_router
+from app.routes.office import router as office_router
 
 DEFAULT_MAPPINGS = [
     ("claude-sonnet-4-5-20250929", "deepseek-chat"),
     ("claude-opus-4-5-20250929", "deepseek-reasoner"),
     ("claude-haiku-4-5-20251001", "deepseek-chat"),
 ]
+
+
+class _StableVaryCORSMiddleware(CORSMiddleware):
+    """Avoid duplicating Origin when an endpoint already declares it in Vary."""
+
+    @staticmethod
+    def allow_explicit_origin(headers: MutableHeaders, origin: str) -> None:
+        headers["Access-Control-Allow-Origin"] = origin
+        vary_values = {
+            value.strip().lower()
+            for value in headers.get("Vary", "").split(",")
+            if value.strip()
+        }
+        if "origin" not in vary_values:
+            headers.add_vary_header("Origin")
 
 
 def _seed_defaults() -> None:
@@ -37,7 +54,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="Office Gateway")
     app.add_middleware(
-        CORSMiddleware,
+        _StableVaryCORSMiddleware,
         allow_origins=["https://pivot.claude.ai", "http://localhost:5173", "http://127.0.0.1:5173"],
         allow_credentials=True,
         allow_methods=["*"],
@@ -45,6 +62,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(proxy_router)
     app.include_router(admin_router)
+    app.include_router(office_router)
 
     @app.get("/health")
     async def health():

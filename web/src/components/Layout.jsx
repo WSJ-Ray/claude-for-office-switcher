@@ -79,6 +79,7 @@ export default function Layout() {
                     ? 'border-black bg-black text-white'
                     : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-950'
                 )}
+                aria-label="系统设置"
                 title="系统设置"
               >
                 <SettingsIcon size={16} />
