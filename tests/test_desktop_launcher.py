@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -33,6 +34,41 @@ class DesktopGatewayAppTests(unittest.TestCase):
         self.assertFalse(should_close)
         self.window.hide.assert_called_once_with()
         self.assertFalse(self.launcher.is_exiting)
+
+    @patch.object(desktop_launcher, "TRAY_ICON_PATH", Path("assets/favicon.ico"))
+    @patch.object(desktop_launcher.Image, "open")
+    def test_tray_icon_uses_packaged_favicon(self, image_open):
+        icon_file = Mock()
+        icon_file.__enter__ = Mock(return_value=icon_file)
+        icon_file.__exit__ = Mock(return_value=False)
+        loaded_image = Mock()
+        icon_file.convert.return_value = loaded_image
+        image_open.return_value = icon_file
+
+        image = self.launcher._create_tray_image()
+
+        self.assertIs(loaded_image, image)
+        image_open.assert_called_once_with(Path("assets/favicon.ico"))
+        icon_file.convert.assert_called_once_with("RGBA")
+
+    @patch.object(desktop_launcher, "TRAY_ICON_PATH", Path("assets/favicon.ico"))
+    @patch.object(desktop_launcher.Image, "open", side_effect=OSError("unreadable icon"))
+    @patch.object(desktop_launcher.DesktopGatewayApp, "_create_fallback_tray_image")
+    def test_tray_icon_falls_back_when_packaged_favicon_cannot_load(self, fallback, _image_open):
+        fallback_image = Mock()
+        fallback.return_value = fallback_image
+
+        image = self.launcher._create_tray_image()
+
+        self.assertIs(fallback_image, image)
+        fallback.assert_called_once_with()
+
+    def test_generated_favicon_is_loadable_for_the_tray(self):
+        with patch.object(self.launcher, "_create_fallback_tray_image") as fallback:
+            image = self.launcher._create_tray_image()
+
+        self.assertEqual((256, 256), image.size)
+        fallback.assert_not_called()
 
     def test_show_window_restores_hidden_window_without_calling_unsupported_focus(self):
         self.launcher.window = self.window

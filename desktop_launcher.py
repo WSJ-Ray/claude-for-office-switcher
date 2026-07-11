@@ -1,8 +1,10 @@
 """Windows desktop entry point for the packaged Office Gateway."""
 import ctypes
 import os
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -15,6 +17,8 @@ from gateway import app
 
 
 WINDOW_TITLE = "Office Gateway"
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+TRAY_ICON_PATH = RESOURCE_DIR / "assets" / "favicon.ico"
 
 
 class TrayIcon(Protocol):
@@ -72,6 +76,14 @@ class DesktopGatewayApp:
 
     @staticmethod
     def _create_tray_image() -> Image.Image:
+        try:
+            with Image.open(TRAY_ICON_PATH) as icon:
+                return icon.convert("RGBA")
+        except (OSError, ValueError):
+            return DesktopGatewayApp._create_fallback_tray_image()
+
+    @staticmethod
+    def _create_fallback_tray_image() -> Image.Image:
         image = Image.new("RGBA", (64, 64), (15, 23, 42, 255))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((10, 10, 54, 54), radius=8, fill=(8, 145, 178, 255))

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\static', 'static')]
+datas = [('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\static', 'static'), ('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico', 'assets')]
 binaries = []
 hiddenimports = ['webview.platforms.edgechromium', 'pystray._win32', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on']
 tmp_ret = collect_all('webview')
@@ -46,4 +46,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico'],
 )

@@ -16,7 +16,9 @@ finally {
   --clean `
   --onefile `
   --noconsole `
+  --icon "$PSScriptRoot\assets\favicon.ico" `
   --add-data "$PSScriptRoot\static;static" `
+  --add-data "$PSScriptRoot\assets\favicon.ico;assets" `
   --collect-all "webview" `
   --collect-all "pystray" `
   --collect-all "PIL" `
