@@ -19,7 +19,7 @@ const setupReason = (status = {}) => {
 
 export function getOfficeUiState(status = {}) {
   const hosts = Object.fromEntries(
-    ['word', 'powerpoint'].map((key) => [
+    ['word', 'powerpoint', 'excel'].map((key) => [
       key,
       { ...status.apps?.[key], state: hostState(status.apps?.[key]) },
     ]),

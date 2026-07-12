@@ -17,6 +17,8 @@ litellm_config.yaml
 analyze_*.py
 test_*.py
 !tests/test_desktop_launcher.py
+!tests/test_office_integration.py
+!tests/test_office_api.py
 check_*.py
 
 # ===== 环境变量与密钥 =====

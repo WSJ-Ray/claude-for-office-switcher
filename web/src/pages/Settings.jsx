@@ -25,6 +25,7 @@ import { getOfficeUiState } from '../lib/office'
 const HOST_DETAILS = {
   word: { title: 'Word', process: 'WINWORD.EXE' },
   powerpoint: { title: 'PowerPoint', process: 'POWERPNT.EXE' },
+  excel: { title: 'Excel', process: 'EXCEL.EXE' },
 }
 
 const STATUS_COPY = {
@@ -120,7 +121,7 @@ export default function Settings() {
             <div className="border border-violet-100 bg-violet-50 p-2.5 text-violet-700"><MonitorCog size={20} /></div>
             <div>
               <h2 className="text-lg font-semibold text-slate-950">Claude for Office</h2>
-              <p className="mt-1 text-sm text-slate-600">Word 和 PowerPoint 使用本机 Developer 注册加载 Gateway 配置。</p>
+              <p className="mt-1 text-sm text-slate-600">Word、PowerPoint 和 Excel 使用本机 Developer 注册加载 Gateway 配置。</p>
             </div>
           </div>
           <button type="button" onClick={() => officeQ.refetch()} disabled={officeQ.isFetching || busy} className="inline-flex items-center gap-2 border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
@@ -142,7 +143,7 @@ export default function Settings() {
               {Object.entries(HOST_DETAILS).map(([key, meta]) => <HostRow key={key} meta={meta} host={officeState.hosts[key]} />)}
             </div>
 
-            {officeState.restartHint && <div className="mt-4 flex gap-2 border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800"><CircleAlert size={17} className="mt-0.5 shrink-0" />关闭并重新打开正在运行的 Word 或 PowerPoint，配置才会生效。</div>}
+            {officeState.restartHint && <div className="mt-4 flex gap-2 border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800"><CircleAlert size={17} className="mt-0.5 shrink-0" />关闭并重新打开正在运行的 Word、PowerPoint 或 Excel，配置才会生效。</div>}
             {officeState.setup.reason && <div className="mt-4 border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-700">{officeState.setup.reason}</div>}
             {officeNotice && <OfficeNotice notice={officeNotice} />}
 
@@ -183,7 +184,7 @@ function HostRow({ meta, host = {} }) {
 function OfficeNotice({ notice }) {
   if (notice.type === 'error') return <div className="mt-4 border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-800">{notice.message}</div>
   const action = notice.type === 'removed' ? '已恢复官方插件。' : 'Claude for Office 已配置。'
-  return <div className="mt-4 border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">{action}{notice.restart && ' 请关闭并重新打开 Word 或 PowerPoint。'}</div>
+  return <div className="mt-4 border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">{action}{notice.restart && ' 请关闭并重新打开 Word、PowerPoint 或 Excel。'}</div>
 }
 
 function ErrorBanner({ message, retry }) {

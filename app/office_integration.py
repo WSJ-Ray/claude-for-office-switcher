@@ -28,6 +28,8 @@ WORD_STORE_ID = "wa200010453"
 WORD_MANIFEST_ID = "d51ccb01-85e7-42ab-885b-de05c07799f3"
 POWERPOINT_STORE_ID = "wa200010001"
 POWERPOINT_MANIFEST_ID = "f5f369e5-aa35-49d7-ad7b-638152ddb008"
+EXCEL_STORE_ID = "wa200009404"
+EXCEL_MANIFEST_ID = "8ac3747c-fc92-4350-aaad-92159ff6f64a"
 
 DEVELOPER_REGISTRY_PATH = r"SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
 CLICK_TO_RUN_REGISTRY_PATH = (
@@ -119,6 +121,15 @@ _APP_SPECS = (
         manifest_id=POWERPOINT_MANIFEST_ID,
         template_name="claude-powerpoint.xml",
         output_name="claude-powerpoint.xml",
+    ),
+    _AppSpec(
+        key="excel",
+        display_name="Excel",
+        executable="EXCEL.EXE",
+        store_id=EXCEL_STORE_ID,
+        manifest_id=EXCEL_MANIFEST_ID,
+        template_name="claude-excel.xml",
+        output_name="claude-excel.xml",
     ),
 )
 
@@ -711,6 +722,7 @@ class OfficeIntegration:
         # Top-level aliases make the stable result convenient for API consumers.
         result["word"] = apps["word"]
         result["powerpoint"] = apps["powerpoint"]
+        result["excel"] = apps["excel"]
         return result
 
     def detect(self) -> dict[str, Any]:
@@ -798,7 +810,10 @@ class OfficeIntegration:
         taskpane_urls = 0
         for element in root.iter():
             local_name = element.tag.rsplit("}", 1)[-1]
-            is_source_location = local_name == "SourceLocation"
+            is_source_location = (
+                local_name == "SourceLocation"
+                and self._attribute_by_local_name(element, "DefaultValue") is not None
+            )
             is_taskpane_url = (
                 local_name == "Url"
                 and self._attribute_by_local_name(element, "id") == "Taskpane.Url"
@@ -1215,6 +1230,8 @@ __all__ = [
     "CLICK_TO_RUN_REGISTRY_PATH",
     "CLICK_TO_RUN_WOW64_REGISTRY_PATH",
     "DEVELOPER_REGISTRY_PATH",
+    "EXCEL_MANIFEST_ID",
+    "EXCEL_STORE_ID",
     "OFFICE_CLICK_TO_RUN_REGISTRY_PATH",
     "OFFICE_DEVELOPER_REGISTRY_PATH",
     "OfficeIntegration",

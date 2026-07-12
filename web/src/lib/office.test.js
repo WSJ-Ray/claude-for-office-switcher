@@ -10,6 +10,7 @@ const readyStatus = {
   apps: {
     word: { application_installed: true, official_installed: true, managed_installed: false, running: false, conflict: false },
     powerpoint: { application_installed: true, official_installed: false, managed_installed: false, running: false, conflict: false },
+    excel: { application_installed: true, official_installed: false, managed_installed: false, running: false, conflict: false },
   },
 }
 
@@ -21,6 +22,7 @@ test('enables initial setup when the local Windows gateway and Office are ready'
   assert.equal(state.remove.disabled, true)
   assert.equal(state.hosts.word.state, 'official')
   assert.equal(state.hosts.powerpoint.state, 'available')
+  assert.equal(state.hosts.excel.state, 'available')
 })
 
 test('explains why setup is disabled when the gateway token is missing', () => {
@@ -30,18 +32,18 @@ test('explains why setup is disabled when the gateway token is missing', () => {
   assert.match(state.setup.reason, /Token/)
 })
 
-test('blocks setup when an external developer override owns either host', () => {
+test('blocks setup when an external developer override owns Excel', () => {
   const state = getOfficeUiState({
     ...readyStatus,
     apps: {
       ...readyStatus.apps,
-      word: { ...readyStatus.apps.word, conflict: true },
+      excel: { ...readyStatus.apps.excel, conflict: true },
     },
   })
 
   assert.equal(state.setup.disabled, true)
   assert.match(state.setup.reason, /Developer/)
-  assert.equal(state.hosts.word.state, 'conflict')
+  assert.equal(state.hosts.excel.state, 'conflict')
 })
 
 test('uses reconfigure and restore actions for a managed installation', () => {
@@ -51,12 +53,28 @@ test('uses reconfigure and restore actions for a managed installation', () => {
     apps: {
       word: { ...readyStatus.apps.word, managed_installed: true, running: true },
       powerpoint: { ...readyStatus.apps.powerpoint, managed_installed: true },
+      excel: { ...readyStatus.apps.excel, managed_installed: true, running: true },
     },
   })
 
   assert.equal(state.setup.label, '重新配置')
   assert.equal(state.remove.disabled, false)
   assert.equal(state.restartHint, true)
+  assert.equal(state.hosts.excel.state, 'managed')
+  assert.equal(state.hosts.excel.running, true)
+})
+
+test('reports the official Claude Excel add-in independently of the gateway add-in', () => {
+  const state = getOfficeUiState({
+    ...readyStatus,
+    apps: {
+      ...readyStatus.apps,
+      excel: { ...readyStatus.apps.excel, official_installed: true },
+    },
+  })
+
+  assert.equal(state.hosts.excel.state, 'official')
+  assert.equal(state.setup.disabled, false)
 })
 
 test('extracts a user-facing message from structured API errors', () => {
