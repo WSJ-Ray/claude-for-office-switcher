@@ -17,6 +17,7 @@ finally {
   --onefile `
   --noconsole `
   --icon "$PSScriptRoot\assets\favicon.ico" `
+  --manifest "$PSScriptRoot\assets\OfficeGateway.manifest" `
   --add-data "$PSScriptRoot\static;static" `
   --add-data "$PSScriptRoot\assets\favicon.ico;assets" `
   --add-data "$PSScriptRoot\app\assets\office;app/assets/office" `

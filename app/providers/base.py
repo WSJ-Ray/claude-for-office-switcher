@@ -6,6 +6,7 @@ class BaseProvider(ABC):
     format: str = ""
 
     def __init__(self, cfg: dict):
+        """从提供商配置中初始化基础地址、密钥和扩展选项。"""
         self.base_url = cfg["base_url"].rstrip("/")
         self.api_key = cfg["api_key"]
         self.extra = cfg.get("extra_config") or {}

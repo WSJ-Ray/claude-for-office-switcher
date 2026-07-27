@@ -1,10 +1,42 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Navigate, useLocation } from 'react-router-dom'
-import { LoaderCircle, LockKeyhole } from 'lucide-react'
+import { AlertCircle, LockKeyhole, Network } from 'lucide-react'
 import { clearToken, get, getSetupStatus, getToken, setToken } from '../lib/api'
+import { Spinner } from './ui'
 
-export default function TokenGate({ children }) {
+function GateShell({ children, desktopMode = false }) {
+  return (
+    <div
+      className="flex h-[100dvh] min-h-[560px] min-w-[960px] flex-col overflow-auto bg-slate-100 text-slate-950"
+      data-runtime={desktopMode ? 'desktop' : 'browser'}
+    >
+      {!desktopMode && (
+        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-slate-300 bg-white px-4">
+          <span className="flex h-7 w-7 items-center justify-center rounded bg-office-700 text-white">
+            <Network size={17} strokeWidth={1.8} aria-hidden="true" />
+          </span>
+          <span className="text-[13px] font-semibold">Office Gateway</span>
+          <span className="h-4 w-px bg-slate-300" aria-hidden="true" />
+          <span className="text-xs text-slate-600">安全访问</span>
+        </header>
+      )}
+      <main className="flex min-h-0 flex-1 items-center justify-center px-8 py-6">
+        {children}
+      </main>
+      <footer className="flex h-8 shrink-0 items-center justify-between border-t border-slate-300 bg-slate-50 px-4 text-[11px] text-slate-600">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" aria-hidden="true" />
+          本地管理服务
+        </span>
+        <span className="font-mono">port 4000</span>
+      </footer>
+    </div>
+  )
+}
+
+/** 根据首次配置和令牌验证状态控制管理端访问。 */
+export default function TokenGate({ children, desktopMode = false }) {
   const [token, setLocal] = useState(getToken() || '')
   const [input, setInput] = useState('')
   const location = useLocation()
@@ -34,24 +66,38 @@ export default function TokenGate({ children }) {
 
   if (setup.isLoading || (currentToken && auth.isLoading)) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-5 text-slate-600">
-        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm">
-          <LoaderCircle size={18} className="animate-spin text-cyan-700" aria-hidden="true" />
-          正在确认管理面板状态…
+      <GateShell desktopMode={desktopMode}>
+        <div className="flex w-[380px] items-center gap-3 rounded-md border border-slate-300 bg-white px-4 py-3 shadow-[0_4px_16px_rgba(0,0,0,0.08)]" role="status">
+          <Spinner className="text-office-700" />
+          <div>
+            <p className="text-[13px] font-semibold text-slate-900">正在连接管理服务</p>
+            <p className="mt-0.5 text-xs text-slate-600">确认配置和访问令牌…</p>
+          </div>
         </div>
-      </div>
+      </GateShell>
     )
   }
 
   if (setup.isError) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-5">
-        <div role="alert" className="w-full max-w-md rounded-xl border border-red-200 bg-white p-6 shadow-sm">
-          <h1 className="text-lg font-semibold text-slate-950">无法连接管理服务</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">请确认网关正在运行后刷新页面。</p>
-          <button type="button" onClick={() => setup.refetch()} className="mt-5 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800">重新连接</button>
-        </div>
-      </div>
+      <GateShell desktopMode={desktopMode}>
+        <section role="alert" className="w-[420px] rounded-md border border-slate-300 bg-white shadow-[0_4px_16px_rgba(0,0,0,0.08)]">
+          <div className="flex items-start gap-3 border-b border-slate-300 px-4 py-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-red-50 text-red-700">
+              <AlertCircle size={18} strokeWidth={1.8} aria-hidden="true" />
+            </span>
+            <div>
+              <h1 className="text-[15px] font-semibold leading-5">无法连接管理服务</h1>
+              <p className="mt-1 text-xs leading-5 text-slate-600">请确认网关正在运行，然后重新建立连接。</p>
+            </div>
+          </div>
+          <div className="flex justify-end bg-slate-50 px-4 py-3">
+            <button type="button" onClick={() => setup.refetch()} className="h-8 rounded bg-office-700 px-3 text-[13px] font-semibold text-white transition-colors duration-150 hover:bg-office-800 active:bg-office-900">
+              重新连接
+            </button>
+          </div>
+        </section>
+      </GateShell>
     )
   }
 
@@ -64,7 +110,9 @@ export default function TokenGate({ children }) {
 
   const authMessage = auth.isError ? '令牌验证失败，请重新输入。' : null
 
-  const submit = () => {
+  /** 保存非空令牌并触发鉴权查询。 */
+  const submit = (event) => {
+    event.preventDefault()
     const value = input.trim()
     if (!value) return
     setToken(value)
@@ -72,42 +120,52 @@ export default function TokenGate({ children }) {
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-white text-slate-950">
-      <div className="relative z-10 flex min-h-screen items-center justify-center px-5">
-        <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-8 shadow-sm">
-          <div className="mb-6 inline-flex rounded-lg border border-slate-200 bg-slate-50 p-3 text-slate-700">
-            <LockKeyhole size={22} />
+    <GateShell desktopMode={desktopMode}>
+      <section className="w-[420px] rounded-md border border-slate-300 bg-white shadow-[0_4px_16px_rgba(0,0,0,0.08)]" aria-labelledby="gateway-login-title">
+        <div className="flex items-start gap-3 border-b border-slate-300 px-4 py-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-office-50 text-office-800">
+            <LockKeyhole size={18} strokeWidth={1.8} aria-hidden="true" />
+          </span>
+          <div>
+            <h1 id="gateway-login-title" className="text-[15px] font-semibold leading-5">连接 Office Gateway</h1>
+            <p className="mt-1 text-xs leading-5 text-slate-600">输入 Gateway Token 访问管理控制台。</p>
           </div>
-          <h1 className="text-2xl font-semibold text-slate-950">Office Gateway</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-600">输入 Gateway Token 访问管理控制台。</p>
-          {(attempted || authMessage) && <p role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{authMessage || '令牌无效或已失效，请重新输入。'}</p>}
-          <div className="mt-6 space-y-3">
-            <label className="block text-xs font-medium uppercase tracking-[0.14em] text-slate-500" htmlFor="token-input">
-              Gateway Token
-            </label>
-            <input
-              id="token-input"
-              type="password"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') submit()
-              }}
-              placeholder={'\u8f93\u5165\u4ee4\u724c'}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-950 outline-none transition-colors placeholder:text-slate-400 focus:border-cyan-700 focus:ring-2 focus:ring-cyan-100"
-            />
+        </div>
+
+        <form onSubmit={submit} className="px-4 py-4">
+          {(attempted || authMessage) ? (
+            <div role="alert" className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-800">
+              {authMessage || '令牌无效或已失效，请重新输入。'}
+            </div>
+          ) : null}
+          <label className="block text-xs font-semibold text-slate-800" htmlFor="token-input">
+            Gateway Token
+          </label>
+          <input
+            id="token-input"
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="输入令牌"
+            className="mt-1.5 h-8 w-full rounded border border-slate-400 bg-white px-2.5 font-mono text-[13px] text-slate-950 outline-none transition-colors duration-150 placeholder:text-slate-500 focus:border-office-700 focus:ring-1 focus:ring-office-700"
+          />
+          <p className="mt-1.5 text-[11px] leading-4 text-slate-600">令牌仅保存在当前设备的浏览器存储中。</p>
+          <div className="mt-4 flex justify-end">
             <button
-              type='button'
-              onClick={submit}
+              type="submit"
               disabled={!input.trim()}
-              className="inline-flex w-full cursor-pointer items-center justify-center rounded-lg bg-black px-4 py-2.5 text-sm font-semibold text-white transition-colors duration-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-8 min-w-24 cursor-pointer items-center justify-center rounded bg-office-700 px-3 text-[13px] font-semibold text-white transition-colors duration-150 hover:bg-office-800 active:bg-office-900 disabled:pointer-events-none disabled:opacity-45"
             >
-              {'\u8fdb\u5165\u63a7\u5236\u53f0'}
+              进入控制台
             </button>
           </div>
-          <p className="mt-5 text-center text-xs text-slate-500">{'\u9996\u6b21\u542f\u52a8\u65f6\u4f1a\u81ea\u52a8\u8fdb\u5165\u300c\u7cfb\u7edf\u8bbe\u7f6e\u300d\u914d\u7f6e\u4ee4\u724c\u3002'}</p>
-        </div>
-      </div>
-    </div>
+        </form>
+        <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-[11px] leading-4 text-slate-600">
+          首次启动会自动进入“系统设置”配置令牌。
+        </p>
+      </section>
+    </GateShell>
   )
 }

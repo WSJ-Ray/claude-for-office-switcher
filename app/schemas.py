@@ -10,6 +10,7 @@ class ProviderFormatModel(BaseModel):
     @field_validator("format", check_fields=False)
     @classmethod
     def validate_format(cls, value: str | None) -> str | None:
+        """校验提供商格式是否已在运行时适配器注册表中注册。"""
         if value is None:
             return value
         if not is_supported_provider_format(value):

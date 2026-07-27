@@ -26,6 +26,7 @@ class _StableVaryCORSMiddleware(CORSMiddleware):
 
     @staticmethod
     def allow_explicit_origin(headers: MutableHeaders, origin: str) -> None:
+        """写入显式跨域源，并确保 Vary 仅包含一个 Origin。"""
         headers["Access-Control-Allow-Origin"] = origin
         vary_values = {
             value.strip().lower()
@@ -42,6 +43,7 @@ def _seed_defaults() -> None:
 
 
 def create_app() -> FastAPI:
+    """初始化数据库、路由和静态资源并创建 FastAPI 应用。"""
     db.init_db()
     db._migrate_total_input_tokens()
     _seed_defaults()
@@ -66,6 +68,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        """返回网关存活状态和版本。"""
         return {"ok": True, "version": "3.0"}
 
     if STATIC_DIR.exists():
@@ -75,10 +78,12 @@ def create_app() -> FastAPI:
 
         @app.get("/")
         async def spa_root():
+            """返回管理端单页应用入口。"""
             return FileResponse(str(STATIC_DIR / "index.html"))
 
         @app.get("/{full_path:path}")
         async def spa_fallback(full_path: str):
+            """优先返回静态文件，否则回退到单页应用入口。"""
             candidate = STATIC_DIR / full_path
             if candidate.is_file():
                 return FileResponse(str(candidate))
@@ -86,6 +91,7 @@ def create_app() -> FastAPI:
     else:
         @app.get("/")
         async def root_only():
+            """在前端尚未构建时返回基础服务状态。"""
             return {"ok": True, "message": "Frontend not built. Visit /admin for API."}
 
     return app

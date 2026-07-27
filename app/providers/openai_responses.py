@@ -16,6 +16,7 @@ from ..translation.o2a import _sse
 
 
 def _empty_usage() -> dict:
+    """创建字段完整且初始值为零的 token 用量字典。"""
     return {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}
 
 
@@ -23,6 +24,7 @@ class OpenAIResponsesAdapter(BaseProvider):
     format = "openai_responses"
 
     def _headers(self) -> dict:
+        """构造 Responses API 的认证、组织和流式响应头。"""
         ua = (
             self.extra.get("user_agent")
             or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -42,11 +44,13 @@ class OpenAIResponsesAdapter(BaseProvider):
         return headers
 
     def _model_headers(self) -> dict:
+        """基于通用请求头构造模型发现所需的 JSON 响应头。"""
         headers = self._headers()
         headers["Accept"] = "application/json"
         return headers
 
     def _responses_url(self) -> str:
+        """根据不同基础地址写法解析最终 Responses API 地址。"""
         if self.base_url.endswith("/responses"):
             return self.base_url
         if self.base_url.endswith("/v1"):
@@ -54,6 +58,7 @@ class OpenAIResponsesAdapter(BaseProvider):
         return f"{self.base_url}/v1/responses"
 
     async def list_models(self) -> list[dict]:
+        """尝试候选模型端点并返回 Anthropic 风格模型列表。"""
         last_status: int | None = None
         async with httpx.AsyncClient(timeout=30.0) as client:
             for url in model_list_urls(self.base_url):
@@ -80,6 +85,7 @@ class OpenAIResponsesAdapter(BaseProvider):
         raise RuntimeError(f"模型列表端点不可用 (HTTP {last_status})")
 
     async def send(self, body: dict) -> tuple[bytes, str, dict, int]:
+        """发送非流式 Responses 请求并转换为 Anthropic 响应。"""
         responses_body = anthropic_to_responses_request({**body, "stream": False})
         payload = json.dumps(responses_body).encode("utf-8")
         model = body.get("model", "")
@@ -116,6 +122,7 @@ class OpenAIResponsesAdapter(BaseProvider):
         )
 
     async def stream(self, body: dict) -> AsyncIterator[tuple[bytes, dict | None]]:
+        """发送流式 Responses 请求并产出 Anthropic SSE 事件和最终用量。"""
         responses_body = anthropic_to_responses_request({**body, "stream": True})
         payload = json.dumps(responses_body).encode("utf-8")
         model = body.get("model", "")

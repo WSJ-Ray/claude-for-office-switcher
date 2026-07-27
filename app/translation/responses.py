@@ -7,14 +7,17 @@ from .o2a import _sse
 
 
 def _new_id() -> str:
+    """生成 Anthropic 风格的消息 ID。"""
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
 def _block_id() -> str:
+    """生成 Anthropic 风格的工具调用内容块 ID。"""
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
 
 def _usage_from_response(usage: dict | None) -> dict:
+    """规范化 Responses API 用量并提取缓存读取 token。"""
     if not isinstance(usage, dict):
         return {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}
     input_details = usage.get("input_tokens_details") or {}
@@ -27,6 +30,7 @@ def _usage_from_response(usage: dict | None) -> dict:
 
 
 def _text_from_content(content: Any) -> str:
+    """将 Anthropic 文本或工具结果内容合并为纯文本。"""
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
@@ -48,11 +52,13 @@ def _text_from_content(content: Any) -> str:
 
 
 def _input_content_from_anthropic(content: Any) -> list[dict]:
+    """将 Anthropic 内容转换为 Responses 用户输入内容块。"""
     text = _text_from_content(content)
     return [{"type": "input_text", "text": text}] if text else []
 
 
 def _output_content_from_anthropic(content: Any) -> list[dict]:
+    """将 Anthropic 内容转换为 Responses 助手输出内容块。"""
     if isinstance(content, str):
         return [{"type": "output_text", "text": content}]
     if not isinstance(content, list):
@@ -65,6 +71,7 @@ def _output_content_from_anthropic(content: Any) -> list[dict]:
 
 
 def _tool_to_responses(tool: dict) -> dict:
+    """将 Anthropic 工具定义转换为 Responses 函数工具定义。"""
     return {
         "type": "function",
         "name": tool.get("name", ""),
@@ -74,7 +81,7 @@ def _tool_to_responses(tool: dict) -> dict:
 
 
 def anthropic_to_responses_request(body: dict) -> dict:
-    """Translate an Anthropic Messages request to an OpenAI Responses request."""
+    """将 Anthropic Messages 请求转换为 OpenAI Responses 请求。"""
     out: dict = {"model": body["model"], "input": []}
 
     system = body.get("system")
@@ -169,7 +176,7 @@ def anthropic_to_responses_request(body: dict) -> dict:
 
 
 def responses_to_anthropic_response(payload: dict, model: str) -> dict:
-    """Translate a non-streaming Responses API response to Anthropic Messages."""
+    """将非流式 Responses API 响应转换为 Anthropic Messages 响应。"""
     content: list[dict] = []
     for item in payload.get("output") or []:
         itype = item.get("type")
@@ -220,7 +227,7 @@ def responses_to_anthropic_response(payload: dict, model: str) -> dict:
 async def responses_stream_to_anthropic_sse(
     responses_iter: AsyncIterator[bytes], model: str
 ) -> AsyncIterator[tuple[bytes, dict | None]]:
-    """Translate Responses API SSE events to Anthropic Messages SSE events."""
+    """将 Responses API SSE 事件转换为 Anthropic Messages SSE 事件。"""
     msg_id = _new_id()
     model_name = model
     sent_message_start = False
@@ -232,6 +239,7 @@ async def responses_stream_to_anthropic_sse(
     stop_reason = "end_turn"
 
     def ensure_message_start(response: dict | None = None) -> bytes | None:
+        """确保消息开始事件仅生成一次，并同步响应标识和模型。"""
         nonlocal sent_message_start, msg_id, model_name
         if response:
             msg_id = response.get("id") or msg_id
@@ -257,6 +265,7 @@ async def responses_stream_to_anthropic_sse(
         )
 
     async def line_iter():
+        """从字节流中逐行解析 Responses SSE JSON 数据。"""
         buf = b""
         async for chunk in responses_iter:
             buf += chunk

@@ -21,6 +21,7 @@ router = APIRouter()
 
 
 def _log(msg: str) -> None:
+    """输出带本地时间的网关运行日志。"""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
@@ -43,6 +44,7 @@ def _resolve_candidates(client_model: str) -> list[tuple[dict, str]]:
 
 @router.get("/v1/models")
 async def list_models(request: Request):
+    """返回去重后的可路由客户端模型列表。"""
     verify_auth(request)
     mappings = db.list_mappings()
     # 去重：同一个 client_model 只展示一次
@@ -70,6 +72,7 @@ async def list_models(request: Request):
 
 @router.post("/v1/messages")
 async def proxy_messages(request: Request):
+    """解析 Anthropic 请求并按优先级转发到候选上游。"""
     verify_auth(request)
     raw = await request.body()
     try:
@@ -117,6 +120,7 @@ def _inject_system_cache(body: dict, provider_format: str, provider_extra: dict)
 
 
 async def _proxy_nonstream(body, client_model, cands, t0):
+    """依次尝试非流式候选上游，记录首个成功响应或最终失败。"""
     last_status = 502
     last_err = "all candidates failed"
     last_provider = cands[-1][0]
@@ -181,7 +185,9 @@ async def _proxy_nonstream(body, client_model, cands, t0):
 
 
 def _proxy_stream(body, client_model, cands, t0):
+    """创建支持候选故障转移和请求日志记录的流式响应。"""
     async def event_stream() -> AsyncIterator[bytes]:
+        """依次连接候选上游，并产出首个成功的 Anthropic SSE 流。"""
         ttft_ms = 0
         first = True
         chosen_usage = {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}

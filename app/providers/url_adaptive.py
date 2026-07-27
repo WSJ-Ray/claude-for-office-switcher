@@ -19,10 +19,12 @@ from ._utils import model_list_urls
 
 
 def _empty_usage() -> dict:
+    """创建字段完整且初始值为零的 token 用量字典。"""
     return {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}
 
 
 def _extract_usage(block: bytes, usage: dict) -> None:
+    """解析 Anthropic SSE 事件块并原地累计 token 用量。"""
     data: bytes | None = None
     for line in block.split(b"\n"):
         line = line.strip()
@@ -56,6 +58,7 @@ class URLAdaptiveAdapter(BaseProvider):
     format = "url_adaptive"
 
     def _headers(self) -> dict:
+        """构造自适应端点的认证请求头和可配置 User-Agent。"""
         ua = (self.extra.get("user_agent")
               or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
@@ -66,6 +69,7 @@ class URLAdaptiveAdapter(BaseProvider):
         }
 
     def _build_endpoint(self, path: str) -> str:
+        """识别常见基础路径后拼接指定 API 端点。"""
         normalized = self.base_url.rstrip("/")
         suffixes = ("/v1", "/anthropic", "/v1/anthropic")
         for suffix in suffixes:
@@ -74,6 +78,7 @@ class URLAdaptiveAdapter(BaseProvider):
         return f"{normalized}/v1/{path.lstrip('/')}"
 
     async def list_models(self) -> list[dict]:
+        """尝试候选模型端点并返回 Anthropic 风格模型列表。"""
         last_status: int | None = None
         async with httpx.AsyncClient(timeout=30.0) as client:
             for url in model_list_urls(self.base_url):
@@ -100,6 +105,7 @@ class URLAdaptiveAdapter(BaseProvider):
         raise RuntimeError(f"模型列表端点不可用 (HTTP {last_status})")
 
     async def send(self, body: dict) -> tuple[bytes, str, dict, int]:
+        """向自适应 Messages 地址发送非流式 Anthropic 请求。"""
         payload = json.dumps(body).encode("utf-8")
         endpoint = self._build_endpoint("messages")
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -124,6 +130,7 @@ class URLAdaptiveAdapter(BaseProvider):
         return resp.content, ct, usage, resp.status_code
 
     async def stream(self, body: dict) -> AsyncIterator[tuple[bytes, dict | None]]:
+        """透传自适应 Messages SSE 流并收集最终用量与首字节延迟。"""
         payload = json.dumps(body).encode("utf-8")
         endpoint = self._build_endpoint("messages")
         usage = _empty_usage()

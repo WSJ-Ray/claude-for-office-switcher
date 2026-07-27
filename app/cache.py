@@ -9,6 +9,7 @@ class ModelListCache:
     """
 
     def __init__(self, ttl: int = 300, max_size: int = 200):
+        """初始化缓存的过期时间、容量上限和线程锁。"""
         self._ttl = ttl
         self._max_size = max_size
         self._lock = threading.Lock()
@@ -39,9 +40,11 @@ class ModelListCache:
                 break
 
     def _expired(self, entry: dict) -> bool:
+        """判断缓存条目是否已超过有效期。"""
         return time.time() - entry["ts"] > self._ttl
 
     def get(self, provider_id: int) -> list[str] | None:
+        """读取提供商模型列表，并清理已过期条目。"""
         with self._lock:
             entry = self._store.get(provider_id)
             if entry is None:
@@ -52,11 +55,13 @@ class ModelListCache:
             return entry["models"]
 
     def set(self, provider_id: int, models: list[str]) -> None:
+        """写入提供商模型列表并执行容量淘汰。"""
         with self._lock:
             self._store[provider_id] = {"models": models, "ts": time.time()}
             self._evict()
 
     def get_preview(self, key: str) -> list[str] | None:
+        """按配置摘要读取预览模型列表，并清理已过期条目。"""
         with self._lock:
             entry = self._preview.get(key)
             if entry is None:
@@ -67,15 +72,18 @@ class ModelListCache:
             return entry["models"]
 
     def set_preview(self, key: str, models: list[str]) -> None:
+        """缓存草稿配置对应的预览模型列表。"""
         with self._lock:
             self._preview[key] = {"models": models, "ts": time.time()}
             self._evict()
 
     def invalidate(self, provider_id: int) -> None:
+        """使指定提供商的模型缓存失效。"""
         with self._lock:
             self._store.pop(provider_id, None)
 
     def flush(self) -> None:
+        """清空已保存和预览模型的全部缓存。"""
         with self._lock:
             self._store.clear()
             self._preview.clear()

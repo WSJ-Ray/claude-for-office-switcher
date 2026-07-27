@@ -3,18 +3,17 @@ from urllib.parse import urlparse
 
 
 def model_list_urls(base: str) -> list[str]:
-    """Generate candidate model-list URLs for an upstream base URL.
+    """根据上游基础地址生成候选模型列表 URL。
 
-    Many Anthropic-compatible endpoints (e.g. DeepSeek ``/anthropic``) don't
-    expose ``/v1/models`` themselves, but the model list lives on the same
-    host at an OpenAI-style endpoint.  We try several candidates:
+    部分 Anthropic 兼容端点不会直接暴露 ``/v1/models``，模型列表可能位于
+    同一主机的 OpenAI 风格路径，因此依次尝试以下候选地址：
 
     1. ``{base}/v1/models``
     2. ``{base}/models``
-    3. parent-path ``/v1/models``  (strips one path segment from base)
-    4. parent-path ``/models``
+    3. 上一级路径的 ``/v1/models``
+    4. 上一级路径的 ``/models``
 
-    Deduplicates while preserving order.
+    返回结果会保留顺序并去重。
     """
     urls = [f"{base}/v1/models", f"{base}/models"]
     parsed = urlparse(base)

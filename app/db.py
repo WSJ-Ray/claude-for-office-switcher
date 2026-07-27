@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 @contextmanager
 def get_conn():
+    """创建启用外键约束的数据库连接，并在退出时提交和关闭。"""
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -81,6 +82,7 @@ def get_conn():
 
 
 def init_db() -> None:
+    """初始化数据库结构并执行兼容性迁移。"""
     with _lock, get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
@@ -116,6 +118,7 @@ def _migrate_total_input_tokens() -> None:
 
 
 def _row_to_provider(row) -> dict:
+    """将数据库行转换为包含布尔值和配置字典的提供商对象。"""
     d = dict(row)
     d["enabled"] = bool(d["enabled"])
     d["is_default"] = bool(d["is_default"])
@@ -124,18 +127,21 @@ def _row_to_provider(row) -> dict:
 
 
 def list_providers() -> list[dict]:
+    """按创建顺序返回全部提供商。"""
     with _lock, get_conn() as conn:
         rows = conn.execute("SELECT * FROM providers ORDER BY id").fetchall()
     return [_row_to_provider(r) for r in rows]
 
 
 def get_provider(provider_id: int) -> Optional[dict]:
+    """按主键读取提供商，不存在时返回 None。"""
     with _lock, get_conn() as conn:
         row = conn.execute("SELECT * FROM providers WHERE id=?", (provider_id,)).fetchone()
     return _row_to_provider(row) if row else None
 
 
 def get_default_provider() -> Optional[dict]:
+    """返回当前启用的默认提供商。"""
     with _lock, get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM providers WHERE is_default=1 AND enabled=1 LIMIT 1"
@@ -144,6 +150,7 @@ def get_default_provider() -> Optional[dict]:
 
 
 def create_provider(p: dict) -> int:
+    """创建提供商并返回其数据库主键。"""
     with _lock, get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO providers(name, format, base_url, api_key, enabled, is_default, extra_config) "
@@ -159,6 +166,7 @@ def create_provider(p: dict) -> int:
 
 
 def update_provider(provider_id: int, p: dict) -> None:
+    """按传入字段局部更新指定提供商。"""
     fields = []
     values = []
     for k in ("name", "format", "base_url", "api_key", "enabled", "is_default", "extra_config"):
@@ -178,18 +186,20 @@ def update_provider(provider_id: int, p: dict) -> None:
 
 
 def delete_provider(provider_id: int) -> None:
+    """删除指定提供商及其级联模型映射。"""
     with _lock, get_conn() as conn:
         conn.execute("DELETE FROM providers WHERE id=?", (provider_id,))
 
 
 def set_default_provider(provider_id: int) -> None:
+    """以事务方式将指定提供商设为唯一默认项。"""
     with _lock, get_conn() as conn:
         conn.execute("UPDATE providers SET is_default=0")
         conn.execute("UPDATE providers SET is_default=1 WHERE id=?", (provider_id,))
 
 
 def list_mappings() -> list[dict]:
-    """Return mappings with provider and runtime routing state for the admin UI."""
+    """返回带提供商信息和运行时路由状态的全部模型映射。"""
     with _lock, get_conn() as conn:
         rows = conn.execute(
             "SELECT m.*, p.name AS provider_name, p.format AS provider_format, "
@@ -219,7 +229,7 @@ def list_mappings() -> list[dict]:
 
 
 def list_mapping_candidates(client_model: str) -> list[dict]:
-    """Return every mapping for a model, including excluded routing candidates."""
+    """返回客户端模型的全部映射，包括被排除的路由候选项。"""
     with _lock, get_conn() as conn:
         rows = conn.execute(
             "SELECT m.*, p.name AS provider_name, p.format AS provider_format, "
@@ -278,6 +288,7 @@ def next_priority(client_model: str) -> int:
 
 
 def create_mapping(m: dict) -> int:
+    """创建模型映射，未指定优先级时追加到故障转移队尾。"""
     with _lock, get_conn() as conn:
         prio = m.get("priority")
         if prio is None:
@@ -298,6 +309,7 @@ def create_mapping(m: dict) -> int:
 
 
 def update_mapping(mapping_id: int, m: dict) -> None:
+    """按传入字段局部更新指定模型映射。"""
     fields, values = [], []
     for k in ("provider_id", "client_model", "upstream_model", "enabled", "priority"):
         if k in m and m[k] is not None:
@@ -315,11 +327,10 @@ def update_mapping(mapping_id: int, m: dict) -> None:
 
 
 def reorder_mappings(client_model: str, mapping_ids: list[int]) -> list[dict]:
-    """Atomically validate and normalize one model's routing order.
+    """以事务方式校验并重排一个客户端模型的完整路由队列。
 
-    The supplied IDs must contain every mapping in the client-model group
-    exactly once. This prevents a partial priority swap from leaving an
-    inconsistent failover queue when a request fails between two updates.
+    传入 ID 必须无重复且完整覆盖该模型的全部映射，避免部分更新导致
+    故障转移优先级不一致。
     """
     expected_ids = set(mapping_ids)
     if len(expected_ids) != len(mapping_ids):
@@ -349,11 +360,13 @@ def reorder_mappings(client_model: str, mapping_ids: list[int]) -> list[dict]:
 
 
 def delete_mapping(mapping_id: int) -> None:
+    """删除指定模型映射。"""
     with _lock, get_conn() as conn:
         conn.execute("DELETE FROM model_mappings WHERE id=?", (mapping_id,))
 
 
 def insert_log(log: dict) -> int:
+    """写入请求日志并计算总输入相关 token 数。"""
     with _lock, get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO request_logs(provider_id, provider_name, client_model, upstream_model, "
@@ -376,6 +389,7 @@ def insert_log(log: dict) -> int:
 
 
 def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
+    """分页返回按时间倒序排列的请求日志。"""
     with _lock, get_conn() as conn:
         rows = conn.execute(
             "SELECT id, datetime(ts, ?) AS ts, provider_id, provider_name, "
@@ -388,6 +402,7 @@ def list_logs(limit: int = 100, offset: int = 0) -> list[dict]:
 
 
 def stats_summary() -> dict:
+    """汇总全部请求的数量、错误率、延迟和 token 用量。"""
     with _lock, get_conn() as conn:
         total = conn.execute("SELECT COUNT(*) c FROM request_logs").fetchone()["c"]
         errors = conn.execute("SELECT COUNT(*) c FROM request_logs WHERE status>=400 OR error IS NOT NULL").fetchone()["c"]
@@ -455,7 +470,7 @@ def stats_hourly(hours: int = 24) -> list[dict]:
 
 
 def stats_trend(range_key: str = "24h", now=None) -> list[dict]:
-    """Aggregate dashboard requests into complete local-time hour or day buckets."""
+    """将仪表盘请求聚合为连续的本地小时或日期时间桶。"""
     from datetime import datetime
 
     ranges = {
@@ -564,7 +579,7 @@ def set_setting(key: str, value: str) -> None:
 
 
 def get_or_create_office_bootstrap_secret() -> str:
-    """Return the stable Office bootstrap secret, creating it atomically once."""
+    """读取稳定的 Office 引导密钥，不存在时以原子方式创建。"""
     with _lock, get_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(

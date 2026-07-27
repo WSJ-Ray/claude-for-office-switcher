@@ -128,20 +128,20 @@ _CAPABILITY_METADATA: dict[str, dict] = {
 
 
 def supported_provider_formats() -> tuple[str, ...]:
-    """Return formats that can actually be instantiated at runtime."""
+    """返回运行时可实例化的全部提供商格式。"""
     return tuple(REGISTRY)
 
 
 def is_supported_provider_format(fmt: str) -> bool:
+    """判断提供商格式是否已注册并可实例化。"""
     return fmt in REGISTRY
 
 
 def list_provider_capabilities() -> list[dict]:
-    """Return UI-safe metadata for every registered provider format.
+    """返回所有已注册提供商格式的前端安全元数据。
 
-    Iterating over ``REGISTRY`` makes registration the single source of truth:
-    future adapters appear in this catalog automatically, even before custom
-    presentation metadata is added for them.
+    以 ``REGISTRY`` 为唯一数据源，使新适配器即使尚未添加定制展示信息，
+    也能自动出现在能力目录中。
     """
     capabilities: list[dict] = []
     for fmt in supported_provider_formats():
@@ -161,6 +161,7 @@ def list_provider_capabilities() -> list[dict]:
 
 
 def get_adapter(provider: dict) -> BaseProvider:
+    """根据提供商格式创建对应的运行时适配器。"""
     fmt = provider["format"]
     cls = REGISTRY.get(fmt)
     if not cls:

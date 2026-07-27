@@ -38,17 +38,21 @@ def _mask_key(p: dict) -> dict:
 
 
 def _is_masked_key(value: str | None) -> bool:
+    """判断 API Key 是否为管理端返回的掩码值。"""
     return bool(value) and "*" in value
 
 
 def _is_placeholder_key(value: str | None) -> bool:
+    """判断 API Key 是否为空或掩码占位值。"""
     return value == "" or _is_masked_key(value)
 
 
 def _model_ids(models: list[dict]) -> list[str]:
+    """从模型对象列表中提取非空模型 ID。"""
     return [m["id"] for m in models if m.get("id")]
 
 def _discovery_metadata() -> dict:
+    """返回模型发现操作的能力边界说明。"""
     return {
         "operation": "model_discovery",
         "end_to_end": False,
@@ -59,26 +63,28 @@ def _discovery_metadata() -> dict:
 
 @router.get("/provider-capabilities")
 async def provider_capabilities(request: Request):
-    """Return the provider formats currently registered by the runtime."""
+    """返回运行时当前注册的提供商格式和能力。"""
     verify_auth(request)
     return {"data": list_provider_capabilities()}
 
 
 @router.get("/auth-check")
 async def auth_check(request: Request):
-    """Validate a saved gateway token without changing server state."""
+    """验证已保存的网关令牌且不修改服务状态。"""
     verify_auth(request)
     return {"ok": True}
 
 
 @router.get("/providers")
 async def list_providers(request: Request):
+    """返回 API Key 已掩码的提供商列表。"""
     verify_auth(request)
     return {"data": [_mask_key(p) for p in db.list_providers()]}
 
 
 @router.post("/providers")
 async def create_provider(payload: ProviderIn, request: Request):
+    """创建提供商，并在需要时设为唯一默认项。"""
     verify_auth(request)
     data = payload.model_dump()
     if data.get("is_default"):
@@ -92,6 +98,7 @@ async def create_provider(payload: ProviderIn, request: Request):
 
 @router.put("/providers/{pid}")
 async def update_provider(pid: int, payload: ProviderUpdate, request: Request):
+    """局部更新提供商并使其模型缓存失效。"""
     verify_auth(request)
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not db.get_provider(pid):
@@ -107,6 +114,7 @@ async def update_provider(pid: int, payload: ProviderUpdate, request: Request):
 
 @router.delete("/providers/{pid}")
 async def delete_provider(pid: int, request: Request):
+    """删除提供商并清理对应模型缓存。"""
     verify_auth(request)
     db.delete_provider(pid)
     model_cache.invalidate(pid)
@@ -227,7 +235,7 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
 
 @router.get("/routes/preflight")
 async def route_preflight(client_model: str, request: Request):
-    """Explain the exact routing decision without calling an upstream API."""
+    """在不调用上游的情况下解释客户端模型的实际路由决策。"""
     verify_auth(request)
     normalized_model = (client_model or "").strip()
     if not normalized_model:
@@ -283,12 +291,14 @@ async def route_preflight(client_model: str, request: Request):
 
 @router.get("/mappings")
 async def list_mappings(request: Request):
+    """返回全部模型映射及其当前可路由状态。"""
     verify_auth(request)
     return {"data": db.list_mappings()}
 
 
 @router.post("/mappings")
 async def create_mapping(payload: MappingIn, request: Request):
+    """校验客户端模型名称并创建模型映射。"""
     verify_auth(request)
     cm = (payload.client_model or "").lower()
     if not any(t in cm for t in ("sonnet", "opus", "haiku")):
@@ -299,7 +309,7 @@ async def create_mapping(payload: MappingIn, request: Request):
 
 @router.put("/mappings/reorder")
 async def reorder_mappings(payload: MappingReorderIn, request: Request):
-    """Atomically set the full priority order for one client model."""
+    """以原子方式设置一个客户端模型的完整优先级顺序。"""
     verify_auth(request)
     try:
         mappings = db.reorder_mappings(payload.client_model, payload.mapping_ids)
@@ -310,6 +320,7 @@ async def reorder_mappings(payload: MappingReorderIn, request: Request):
 
 @router.put("/mappings/{mid}")
 async def update_mapping(mid: int, payload: MappingUpdate, request: Request):
+    """校验并局部更新指定模型映射。"""
     verify_auth(request)
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if "client_model" in data:
@@ -322,6 +333,7 @@ async def update_mapping(mid: int, payload: MappingUpdate, request: Request):
 
 @router.delete("/mappings/{mid}")
 async def delete_mapping(mid: int, request: Request):
+    """删除指定模型映射。"""
     verify_auth(request)
     db.delete_mapping(mid)
     return {"ok": True}
@@ -329,6 +341,7 @@ async def delete_mapping(mid: int, request: Request):
 
 @router.get("/stats")
 async def stats(request: Request, range: str = "24h"):
+    """返回汇总、趋势和提供商维度的仪表盘统计。"""
     verify_auth(request)
     if range not in {"24h", "7d", "30d"}:
         raise HTTPException(422, "range must be one of: 24h, 7d, 30d")
@@ -348,6 +361,7 @@ async def stats(request: Request, range: str = "24h"):
 
 @router.get("/logs")
 async def logs(request: Request, limit: int = 100, offset: int = 0):
+    """分页返回请求日志。"""
     verify_auth(request)
     return {"data": db.list_logs(limit=min(limit, 500), offset=max(offset, 0))}
 

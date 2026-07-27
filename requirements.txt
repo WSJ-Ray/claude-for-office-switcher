@@ -2,6 +2,6 @@ fastapi
 uvicorn[standard]
 httpx
 pydantic
-pywebview
+pywebview==6.2.1
 pystray
 Pillow

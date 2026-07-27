@@ -14,6 +14,7 @@ from ._utils import model_list_urls
 
 
 def _strip_tool_type(body: dict) -> None:
+    """移除部分 Anthropic 兼容上游不接受的自定义工具类型字段。"""
     tools = body.get("tools")
     if tools:
         for t in tools:
@@ -24,6 +25,7 @@ def _strip_tool_type(body: dict) -> None:
 
 
 def _empty_usage() -> dict:
+    """创建字段完整且初始值为零的 token 用量字典。"""
     return {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}
 
 
@@ -107,6 +109,7 @@ class AnthropicAdapter(BaseProvider):
     format = "anthropic"
 
     def _headers(self) -> dict:
+        """构造 Anthropic 兼容请求头和可配置的浏览器 User-Agent。"""
         # 自定义 User-Agent，避免 Cloudflare WAF 把 httpx 默认 UA 当作 bot 拦截（403）
         ua = (self.extra.get("user_agent")
               or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

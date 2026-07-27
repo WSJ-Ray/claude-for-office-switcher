@@ -33,11 +33,13 @@ class FakeRegistry:
         self.fail_set_name = None
         self.fail_set_after_name = None
         self.fail_delete_name = None
+        self.fail_delete_after_name = None
         self.query_errors = {}
         self.failure_message = "simulated registry failure"
         self.mutation_observer = None
         self.query_hook = None
         self.after_set_hook = None
+        self.after_delete_hook = None
 
     def query_value(self, hive, path, name):
         self.queries.append((hive, path, name))
@@ -78,6 +80,10 @@ class FakeRegistry:
             raise FileNotFoundError(name)
         self.deletes.append((hive, path, name))
         del self.values[key]
+        if self.after_delete_hook:
+            self.after_delete_hook(self, hive, path, name)
+        if name == self.fail_delete_after_name:
+            raise OSError(self.failure_message)
 
 
 class FakeRunner:
@@ -857,6 +863,33 @@ class OfficeIntegrationTests(unittest.TestCase):
         )
         self.assertFalse((self.data_dir / "office_addins").exists())
 
+    def test_setup_rejects_external_takeover_during_final_status(self):
+        self.install_office()
+        self.write_templates()
+        service = self.make_service()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        external_path = str(self.root / "external-final-status.xml")
+        original_status = service.status
+        status_calls = 0
+
+        def inject_takeover_on_final_status():
+            nonlocal status_calls
+            status_calls += 1
+            if status_calls == 2:
+                self.registry.values[target] = external_path
+            return original_status()
+
+        service.status = inject_takeover_on_final_status
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            service.setup("bootstrap-secret")
+
+        self.assertEqual(
+            context.exception.code, "developer_override_conflict"
+        )
+        self.assertEqual(self.registry.values[target], external_path)
+        self.assertFalse((self.data_dir / "office_addins").exists())
+
     def test_setup_rollback_preserves_registry_value_taken_over_externally(self):
         self.install_office()
         self.write_templates()
@@ -901,6 +934,311 @@ class OfficeIntegrationTests(unittest.TestCase):
         self.assert_safe_error(
             context.exception, "setup_rollback_failed", sensitive, self.data_dir
         )
+
+    def test_conflict_status_does_not_expose_external_registry_path(self):
+        self.install_office()
+        sensitive_path = self.root / "private" / "external-word.xml"
+        self.registry.values[
+            ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        ] = str(sensitive_path)
+
+        status = self.make_service().status()
+
+        self.assertTrue(status["apps"]["word"]["conflict"])
+        self.assertNotIn("registered_path", status["apps"]["word"])
+        self.assertNotIn(str(sensitive_path), json.dumps(status))
+
+    def test_repair_single_conflict_installs_all_apps_and_reports_running_office(self):
+        self.install_office()
+        self.write_templates()
+        self.runner.stdout = (
+            '"WINWORD.EXE","1052","Console","1","22,000 K"\r\n'
+        )
+        external_path = self.root / "external-word.xml"
+        self.registry.values[
+            ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        ] = str(external_path)
+
+        result = self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["restart_required"])
+        self.assertEqual(result["repaired_apps"], ["word"])
+        self.assertFalse(result["status"]["conflict"])
+        self.assertTrue(result["status"]["managed_installed"])
+        self.assertEqual(
+            self.registry.values[
+                ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+            ],
+            str(self.data_dir / "office_addins" / "claude-word.xml"),
+        )
+        self.assertNotIn(str(external_path), json.dumps(result))
+
+    def test_repair_multiple_conflicts_reports_apps_in_spec_order(self):
+        self.install_office()
+        self.write_templates()
+        external_values = {
+            EXCEL_MANIFEST_ID: str(self.root / "external-excel.xml"),
+            WORD_MANIFEST_ID: str(self.root / "external-word.xml"),
+        }
+        for manifest_id, value in external_values.items():
+            self.registry.values[
+                ("HKCU", DEVELOPER_REGISTRY_PATH, manifest_id)
+            ] = value
+
+        result = self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(result["repaired_apps"], ["word", "excel"])
+        self.assertEqual(
+            [name for _, _, name in self.registry.deletes[:2]],
+            [WORD_MANIFEST_ID, EXCEL_MANIFEST_ID],
+        )
+        for value in external_values.values():
+            self.assertNotIn(value, self.registry.values.values())
+
+    def test_repair_without_conflicts_is_an_idempotent_setup(self):
+        self.install_office()
+        self.write_templates()
+        service = self.make_service()
+
+        first = service.repair_conflicts("bootstrap-secret")
+        delete_count = len(self.registry.deletes)
+        write_count = len(self.registry.writes)
+        second = service.repair_conflicts("bootstrap-secret")
+
+        self.assertTrue(first["changed"])
+        self.assertEqual(first["repaired_apps"], [])
+        self.assertFalse(second["changed"])
+        self.assertEqual(second["repaired_apps"], [])
+        self.assertEqual(len(self.registry.deletes), delete_count)
+        self.assertEqual(len(self.registry.writes), write_count)
+
+    def test_repair_prevalidates_manifest_before_removing_conflict(self):
+        self.install_office()
+        self.write_templates()
+        word_template = (
+            self.bundle_dir / "app" / "assets" / "office" / "claude-word.xml"
+        )
+        word_template.unlink()
+        external_path = str(self.root / "external-word.xml")
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        self.registry.values[target] = external_path
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "manifest_template_missing")
+        self.assertEqual(self.registry.values[target], external_path)
+        self.assertEqual(self.registry.deletes, [])
+
+    def test_repair_aborts_without_deleting_value_changed_after_snapshot(self):
+        self.install_office()
+        self.write_templates()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        original_path = str(self.root / "external-original.xml")
+        replacement_path = str(self.root / "external-replacement.xml")
+        self.registry.values[target] = original_path
+        query_count = 0
+
+        def replace_before_predelete_check(registry, hive, path, name):
+            nonlocal query_count
+            if (hive, path, name) != target:
+                return
+            query_count += 1
+            if query_count == 3:
+                registry.values[target] = replacement_path
+
+        self.registry.query_hook = replace_before_predelete_check
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assert_safe_error(
+            context.exception,
+            "repair_failed",
+            original_path,
+            replacement_path,
+        )
+        self.assertEqual(self.registry.values[target], replacement_path)
+        self.assertEqual(self.registry.deletes, [])
+
+    def test_repair_treats_conflict_cleared_after_snapshot_as_idempotent_setup(self):
+        self.install_office()
+        self.write_templates()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        self.registry.values[target] = str(self.root / "external-word.xml")
+        query_count = 0
+
+        def clear_before_predelete_check(registry, hive, path, name):
+            nonlocal query_count
+            if (hive, path, name) != target:
+                return
+            query_count += 1
+            if query_count == 3:
+                registry.values.pop(target, None)
+
+        self.registry.query_hook = clear_before_predelete_check
+
+        result = self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["repaired_apps"], [])
+        self.assertEqual(self.registry.deletes, [])
+        self.assertEqual(
+            self.registry.values[target],
+            str(self.data_dir / "office_addins" / "claude-word.xml"),
+        )
+
+    def test_repair_restores_all_deleted_values_when_a_later_delete_fails(self):
+        self.install_office()
+        self.write_templates()
+        word_target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        powerpoint_target = (
+            "HKCU",
+            DEVELOPER_REGISTRY_PATH,
+            POWERPOINT_MANIFEST_ID,
+        )
+        word_external = str(self.root / "external-word.xml")
+        powerpoint_external = str(self.root / "external-powerpoint.xml")
+        self.registry.values[word_target] = word_external
+        self.registry.values[powerpoint_target] = powerpoint_external
+        self.registry.fail_delete_name = POWERPOINT_MANIFEST_ID
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "repair_failed")
+        self.assertEqual(self.registry.values[word_target], word_external)
+        self.assertEqual(
+            self.registry.values[powerpoint_target], powerpoint_external
+        )
+        self.assertFalse((self.data_dir / "office_addins").exists())
+
+    def test_repair_restores_value_when_delete_mutates_then_raises(self):
+        self.install_office()
+        self.write_templates()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        external_path = str(self.root / "external-word.xml")
+        self.registry.values[target] = external_path
+        self.registry.fail_delete_after_name = WORD_MANIFEST_ID
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "repair_failed")
+        self.assertEqual(self.registry.values[target], external_path)
+
+    def test_repair_restores_deleted_values_when_setup_fails(self):
+        self.install_office()
+        self.write_templates()
+        targets = {
+            WORD_MANIFEST_ID: str(self.root / "external-word.xml"),
+            EXCEL_MANIFEST_ID: str(self.root / "external-excel.xml"),
+        }
+        for manifest_id, value in targets.items():
+            self.registry.values[
+                ("HKCU", DEVELOPER_REGISTRY_PATH, manifest_id)
+            ] = value
+        self.registry.fail_set_name = POWERPOINT_MANIFEST_ID
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "repair_failed")
+        for manifest_id, value in targets.items():
+            self.assertEqual(
+                self.registry.values[
+                    ("HKCU", DEVELOPER_REGISTRY_PATH, manifest_id)
+                ],
+                value,
+            )
+        self.assertFalse((self.data_dir / "office_addins").exists())
+
+    def test_repair_reports_stable_error_when_external_value_restore_fails(self):
+        self.install_office()
+        self.write_templates()
+        sensitive = r"SECRET_TOKEN C:\Users\alice\external-word.xml"
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        self.registry.values[target] = sensitive
+        self.registry.fail_set_name = WORD_MANIFEST_ID
+        self.registry.failure_message = sensitive
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assert_safe_error(
+            context.exception,
+            "repair_rollback_failed",
+            sensitive,
+            self.data_dir,
+        )
+        self.assertNotIn(target, self.registry.values)
+
+    def test_repair_does_not_overwrite_value_added_during_delete_verification(self):
+        self.install_office()
+        self.write_templates()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        original_path = str(self.root / "external-original.xml")
+        replacement_path = str(self.root / "external-replacement.xml")
+        self.registry.values[target] = original_path
+
+        def replace_after_delete(registry, hive, path, name):
+            if (hive, path, name) == target:
+                registry.values[target] = replacement_path
+
+        self.registry.after_delete_hook = replace_after_delete
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            self.make_service().repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "repair_rollback_failed")
+        self.assertEqual(self.registry.values[target], replacement_path)
+
+    def test_repair_rejects_external_takeover_during_final_status(self):
+        self.install_office()
+        self.write_templates()
+        service = self.make_service()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        original_path = str(self.root / "external-original.xml")
+        replacement_path = str(self.root / "external-final-status.xml")
+        self.registry.values[target] = original_path
+        original_status = service.status
+        status_calls = 0
+
+        def inject_takeover_on_final_status():
+            nonlocal status_calls
+            status_calls += 1
+            if status_calls == 3:
+                self.registry.values[target] = replacement_path
+            return original_status()
+
+        service.status = inject_takeover_on_final_status
+
+        with self.assertRaises(OfficeIntegrationError) as context:
+            service.repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(context.exception.code, "repair_rollback_failed")
+        self.assertEqual(self.registry.values[target], replacement_path)
+        self.assertFalse((self.data_dir / "office_addins").exists())
+
+    def test_repair_holds_the_shared_mutation_lock(self):
+        self.install_office()
+        self.write_templates()
+        target = ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID)
+        self.registry.values[target] = str(self.root / "external-word.xml")
+        service = self.make_service()
+        lock = RecordingLock()
+        service._mutation_lock = lock
+        observed_depths = []
+        self.registry.mutation_observer = (
+            lambda operation, name: observed_depths.append(lock.depth)
+        )
+
+        service.repair_conflicts("bootstrap-secret")
+
+        self.assertEqual(lock.events, ["enter", "exit"])
+        self.assertTrue(observed_depths)
+        self.assertTrue(all(depth == 1 for depth in observed_depths))
 
     def test_setup_and_remove_hold_the_shared_mutation_lock(self):
         self.install_office()

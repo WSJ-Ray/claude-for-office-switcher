@@ -5,14 +5,17 @@ from typing import AsyncIterator
 
 
 def _new_id() -> str:
+    """生成 Anthropic 风格的消息 ID。"""
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
 def _block_id() -> str:
+    """生成 Anthropic 风格的工具调用内容块 ID。"""
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
 
 def _finish_to_stop(reason: str | None) -> str:
+    """将 OpenAI 结束原因映射为 Anthropic 停止原因。"""
     return {
         "stop": "end_turn",
         "length": "max_tokens",
@@ -23,6 +26,7 @@ def _finish_to_stop(reason: str | None) -> str:
 
 
 def _sse(event: str, data: dict) -> bytes:
+    """将事件名称和数据编码为标准 SSE 字节块。"""
     payload = json.dumps(data, ensure_ascii=False)
     return f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
 
@@ -112,6 +116,7 @@ async def openai_stream_to_anthropic_sse(
     model_name = model
 
     def emit_text_start():
+        """构造文本内容块开始事件。"""
         return _sse(
             "content_block_start",
             {
@@ -122,6 +127,7 @@ async def openai_stream_to_anthropic_sse(
         )
 
     def emit_tool_start():
+        """构造工具调用内容块开始事件。"""
         return _sse(
             "content_block_start",
             {
@@ -137,6 +143,7 @@ async def openai_stream_to_anthropic_sse(
         )
 
     async def line_iter():
+        """从任意字节分块中逐行解析 OpenAI SSE JSON 数据。"""
         buf = b""
         async for chunk in openai_iter:
             buf += chunk

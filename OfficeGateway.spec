@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_all
+
+
+manifest_path = str(Path(SPECPATH) / 'assets' / 'OfficeGateway.manifest')
 
 datas = [('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\static', 'static'), ('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico', 'assets'), ('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\app\\assets\\office', 'app/assets/office')]
 binaries = []
@@ -47,4 +52,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico'],
+    manifest=manifest_path,
 )

@@ -62,12 +62,15 @@ _ERROR_MESSAGES = {
     "manifest_template_invalid": "An Office manifest template is invalid.",
     "setup_failed": "Office add-in setup failed.",
     "setup_rollback_failed": "Office add-in setup failed and could not be fully restored.",
+    "repair_failed": "Office developer override repair failed.",
+    "repair_rollback_failed": "Office developer override repair failed and could not be fully restored.",
     "remove_failed": "Office add-in removal failed.",
     "remove_rollback_failed": "Office add-in removal failed and could not be fully restored.",
 }
 
 
 def _is_missing_registry_error(error: BaseException) -> bool:
+    """判断异常是否表示注册表项或值不存在。"""
     return isinstance(error, FileNotFoundError) or getattr(
         error, "winerror", None
     ) in {2, 3}
@@ -77,6 +80,7 @@ class OfficeIntegrationError(RuntimeError):
     """A stable, JSON-serializable domain error for Office integration actions."""
 
     def __init__(self, code: str, message: str | None = None):
+        """根据稳定错误码创建不泄露内部细节的领域异常。"""
         safe_message = _ERROR_MESSAGES.get(
             code, "The Office integration operation failed."
         )
@@ -85,6 +89,7 @@ class OfficeIntegrationError(RuntimeError):
         self.message = safe_message
 
     def to_dict(self) -> dict[str, str]:
+        """将领域异常转换为可安全序列化的响应字典。"""
         return {"code": self.code, "message": self.message}
 
 
@@ -138,11 +143,13 @@ class WinRegistryAdapter:
     """Small lazy wrapper around winreg, using HKCU for every mutation."""
 
     def __init__(self):
+        """延迟导入仅在 Windows 上可用的 winreg 模块。"""
         # winreg does not exist on non-Windows Python builds, so import it only
         # when a Windows operation actually needs the default adapter.
         self._winreg = importlib.import_module("winreg")
 
     def _hive(self, hive: str):
+        """将内部注册表根键名称映射为 winreg 常量。"""
         if hive == _HKCU:
             return self._winreg.HKEY_CURRENT_USER
         if hive == _HKLM:
@@ -150,12 +157,14 @@ class WinRegistryAdapter:
         raise ValueError(f"Unsupported registry hive: {hive}")
 
     def _read_access(self, hive: str) -> int:
+        """构造注册表读取权限，并对 HKLM 使用 64 位视图。"""
         access = self._winreg.KEY_READ
         if hive == _HKLM:
             access |= getattr(self._winreg, "KEY_WOW64_64KEY", 0)
         return access
 
     def query_value(self, hive: str, path: str, name: str) -> Any:
+        """读取注册表值，并将访问错误转换为稳定领域异常。"""
         try:
             with self._winreg.OpenKey(
                 self._hive(hive), path, 0, self._read_access(hive)
@@ -167,6 +176,7 @@ class WinRegistryAdapter:
             raise OfficeIntegrationError("registry_read_failed") from exc
 
     def key_exists(self, hive: str, path: str) -> bool:
+        """判断注册表键是否存在，同时区分缺失与访问失败。"""
         try:
             with self._winreg.OpenKey(
                 self._hive(hive), path, 0, self._read_access(hive)
@@ -178,6 +188,7 @@ class WinRegistryAdapter:
             raise OfficeIntegrationError("registry_read_failed") from exc
 
     def set_value(self, hive: str, path: str, name: str, value: str) -> None:
+        """仅在 HKCU 中创建或更新 Office 开发者注册值。"""
         if hive != _HKCU:
             raise ValueError("Office developer overrides may only be written to HKCU")
         try:
@@ -192,6 +203,7 @@ class WinRegistryAdapter:
             raise OfficeIntegrationError("registry_write_failed") from exc
 
     def delete_value(self, hive: str, path: str, name: str) -> None:
+        """仅从 HKCU 删除 Office 开发者注册值。"""
         if hive != _HKCU:
             raise ValueError("Office developer overrides may only be deleted from HKCU")
         try:
@@ -223,6 +235,7 @@ class OfficeIntegration:
         process: Any | None = None,
         local_app_data: str | os.PathLike[str] | None = None,
     ):
+        """初始化可注入的系统依赖、数据路径和网关地址。"""
         if process is not None and process_runner is not None:
             raise ValueError("Provide either process or process_runner, not both")
         self.platform = sys.platform if platform is None else platform
@@ -250,14 +263,17 @@ class OfficeIntegration:
 
     @staticmethod
     def _absolute_path(value: str | os.PathLike[str]) -> Path:
+        """展开用户目录并返回不依赖文件存在性的绝对路径。"""
         return Path(value).expanduser().absolute()
 
     def _default_bundle_dir(self) -> Path:
+        """解析源码运行或打包运行时的资源根目录。"""
         if getattr(sys, "frozen", False):
             return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
         return Path(__file__).resolve().parent.parent
 
     def _default_data_dir(self) -> Path:
+        """按环境变量、打包目录或项目目录解析数据目录。"""
         configured = self.env.get("GATEWAY_DATA_DIR")
         if configured:
             return Path(configured)
@@ -267,16 +283,19 @@ class OfficeIntegration:
 
     @property
     def output_dir(self) -> Path:
+        """返回生成 Office 清单的受管输出目录。"""
         return self.data_dir / "office_addins"
 
     @property
     def manifest_paths(self) -> dict[str, Path]:
+        """返回每个 Office 应用对应的受管清单路径。"""
         return {
             spec.key: self.output_dir / spec.output_name for spec in _APP_SPECS
         }
 
     @staticmethod
     def _valid_dns_hostname(hostname: str) -> bool:
+        """按 DNS 标签规则校验不带尾点的主机名。"""
         if not hostname or len(hostname) > 253 or hostname.endswith("."):
             return False
         labels = hostname.split(".")
@@ -294,6 +313,10 @@ class OfficeIntegration:
         return True
 
     def _resolve_gateway_url(self) -> str:
+        """解析并校验 Office 可访问的网关基础地址。
+
+        回环地址允许 HTTP，远程主机必须使用 HTTPS；返回值不包含路径、查询或片段。
+        """
         configured = self.env.get("OFFICE_GATEWAY_BASE_URL")
         if configured is None:
             configured_port = self.env.get("PORT") or "4000"
@@ -361,14 +384,17 @@ class OfficeIntegration:
         return urlunsplit((scheme, netloc, normalized_path, "", ""))
 
     def _is_windows(self) -> bool:
+        """判断当前注入的平台标识是否表示 Windows。"""
         return str(self.platform).lower() in {"win32", "windows"}
 
     def _registry(self):
+        """延迟创建并返回注册表适配器。"""
         if self._registry_adapter is None:
             self._registry_adapter = WinRegistryAdapter()
         return self._registry_adapter
 
     def _registry_query(self, hive: str, path: str, name: str):
+        """通过兼容适配器读取注册表值，并规范化缺失与读取错误。"""
         adapter = self._registry()
         method = getattr(adapter, "query_value", None) or getattr(
             adapter, "get_value", None
@@ -388,6 +414,7 @@ class OfficeIntegration:
         return _MISSING if value is None else value
 
     def _registry_key_exists(self, hive: str, path: str) -> bool | None:
+        """通过适配器检查注册表键；不支持该能力时返回 None。"""
         method = getattr(self._registry(), "key_exists", None)
         if method is None:
             return None
@@ -401,6 +428,7 @@ class OfficeIntegration:
             raise OfficeIntegrationError("registry_read_failed") from exc
 
     def _registry_set(self, hive: str, path: str, name: str, value: str) -> None:
+        """限制在 HKCU 中写入注册表，并规范化写入错误。"""
         if hive != _HKCU:
             raise ValueError("Office integration writes are restricted to HKCU")
         adapter = self._registry()
@@ -417,6 +445,7 @@ class OfficeIntegration:
     def _registry_delete(
         self, hive: str, path: str, name: str, *, missing_ok: bool = False
     ) -> None:
+        """限制在 HKCU 中删除注册表，并按需忽略值缺失。"""
         if hive != _HKCU:
             raise ValueError("Office integration deletes are restricted to HKCU")
         adapter = self._registry()
@@ -434,6 +463,7 @@ class OfficeIntegration:
 
     @staticmethod
     def _same_path(actual: Any, expected: Path) -> bool:
+        """按 Windows 路径语义和文件系统别名判断两个路径是否相同。"""
         if not isinstance(actual, (str, os.PathLike)):
             return False
         actual_text = os.fspath(actual)
@@ -441,6 +471,7 @@ class OfficeIntegration:
             return False
 
         def normalize_windows_path(value: str) -> tuple[str, str]:
+            """规范化扩展前缀、分隔符、大小写和 UNC 路径。"""
             filesystem_path = value.replace("/", "\\")
             folded = filesystem_path.casefold()
             if folded.startswith("\\\\?\\unc\\"):
@@ -474,6 +505,7 @@ class OfficeIntegration:
         return normalized_actual == normalized_expected
 
     def _detect_click_to_run(self) -> dict[str, Any]:
+        """从原生和 WOW64 注册表视图检测 Office Click-to-Run 安装。"""
         value_names = (
             "VersionToReport",
             "ClientVersionToReport",
@@ -524,6 +556,7 @@ class OfficeIntegration:
     def _executable_candidates(
         self, executable: str, installation_path: str | None
     ) -> list[Path]:
+        """生成 Office 可执行文件的候选安装路径并保持顺序去重。"""
         candidates: list[Path] = []
         if installation_path:
             base = Path(installation_path)
@@ -554,6 +587,7 @@ class OfficeIntegration:
     def _detect_executable(
         self, executable: str, installation_path: str | None
     ) -> tuple[bool, str | None]:
+        """检查候选路径并返回可执行文件是否存在及其路径。"""
         candidates = self._executable_candidates(executable, installation_path)
         for candidate in candidates:
             if candidate.is_file():
@@ -561,6 +595,7 @@ class OfficeIntegration:
         return False, str(candidates[0]) if candidates else None
 
     def _running_executables(self) -> set[str]:
+        """调用 tasklist 获取当前运行的 Office 可执行文件名称。"""
         if not self._is_windows():
             return set()
         runner = self._process_runner
@@ -593,6 +628,7 @@ class OfficeIntegration:
 
     @staticmethod
     def _json_contains_string(value: Any, expected: str) -> bool:
+        """递归检查 JSON 结构是否包含忽略大小写的目标字符串。"""
         if isinstance(value, str):
             return value.casefold() == expected.casefold()
         if isinstance(value, Mapping):
@@ -608,6 +644,7 @@ class OfficeIntegration:
         return False
 
     def _detect_official_installs(self) -> dict[str, bool]:
+        """扫描 Office Wef 缓存以检测各应用的官方商店加载项。"""
         detected = {spec.key: False for spec in _APP_SPECS}
         wef_dir = (
             self.local_app_data / "Microsoft" / "Office" / "16.0" / "Wef"
@@ -649,6 +686,7 @@ class OfficeIntegration:
         return detected
 
     def status(self) -> dict[str, Any]:
+        """汇总平台、Office 安装、进程、官方加载项及受管注册状态。"""
         supported = self._is_windows()
         if supported:
             click_to_run = self._detect_click_to_run()
@@ -682,7 +720,6 @@ class OfficeIntegration:
             )
             managed_installed = points_to_managed and manifest_path.is_file()
             conflict = registered is not _MISSING and not points_to_managed
-            registered_path = None if registered is _MISSING else str(registered)
             app_status = {
                 "name": spec.display_name,
                 "store_id": spec.store_id,
@@ -694,7 +731,6 @@ class OfficeIntegration:
                 "official": official[spec.key],
                 "managed_installed": managed_installed,
                 "managed": managed_installed,
-                "registered_path": registered_path,
                 "conflict": conflict,
                 "running": spec.executable in running,
             }
@@ -726,22 +762,27 @@ class OfficeIntegration:
         return result
 
     def detect(self) -> dict[str, Any]:
+        """以兼容别名返回当前 Office 集成状态。"""
         return self.status()
 
     def get_status(self) -> dict[str, Any]:
+        """以兼容别名返回当前 Office 集成状态。"""
         return self.status()
 
     def _template_path(self, spec: _AppSpec) -> Path:
+        """返回指定 Office 应用的清单模板路径。"""
         return self.bundle_dir / "app" / "assets" / "office" / spec.template_name
 
     @staticmethod
     def _attribute_by_local_name(element: ET.Element, name: str) -> str | None:
+        """忽略 XML 命名空间读取指定本地名称的属性。"""
         for attribute, value in element.attrib.items():
             if attribute.rsplit("}", 1)[-1].casefold() == name.casefold():
                 return value
         return None
 
     def _addin_url(self, existing: str, spec: _AppSpec, bootstrap_url: str) -> str:
+        """在保留无关参数的同时为加载项入口注入引导配置。"""
         parsed = urlsplit(existing)
         query = [
             (key, value)
@@ -769,6 +810,7 @@ class OfficeIntegration:
         )
 
     def _render_manifest(self, spec: _AppSpec, bootstrap_url: str) -> bytes:
+        """校验清单模板并渲染仅指向当前网关的应用清单。"""
         template_path = self._template_path(spec)
         if not template_path.is_file():
             raise OfficeIntegrationError(
@@ -845,6 +887,7 @@ class OfficeIntegration:
 
     @staticmethod
     def _atomic_write(path: Path, content: bytes) -> None:
+        """通过同目录临时文件和原子替换安全写入清单。"""
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -864,6 +907,7 @@ class OfficeIntegration:
 
     @staticmethod
     def _file_snapshot(path: Path):
+        """读取文件快照；文件不存在时返回内部缺失标记。"""
         try:
             return path.read_bytes()
         except FileNotFoundError:
@@ -875,6 +919,7 @@ class OfficeIntegration:
         specs: list[_AppSpec],
         expected_current: Mapping[str, Any],
     ) -> bool:
+        """仅在当前值仍由本次操作持有时逆序恢复注册表快照。"""
         restored = True
         for spec in reversed(specs):
             previous = registry_before[spec.key]
@@ -915,6 +960,7 @@ class OfficeIntegration:
         expected_current: Mapping[str, Any],
         output_dir_existed: bool,
     ) -> bool:
+        """仅在当前内容仍匹配预期时逆序恢复文件和输出目录快照。"""
         restored = True
         for spec in reversed(specs):
             previous = files_before[spec.key]
@@ -965,10 +1011,14 @@ class OfficeIntegration:
         return restored
 
     def setup(self, secret: str) -> dict[str, Any]:
+        """在共享互斥锁内安装或刷新受管 Office 加载项。"""
         with self._mutation_lock:
             return self._setup_locked(secret)
 
-    def _setup_locked(self, secret: str) -> dict[str, Any]:
+    def _validate_setup_preconditions(
+        self, secret: str
+    ) -> tuple[dict[str, Any], str]:
+        """校验平台、Office、冲突和密钥，并返回状态与引导 URL。"""
         if not self._is_windows():
             raise OfficeIntegrationError(
                 "unsupported_platform", "Office integration is only supported on Windows"
@@ -983,6 +1033,16 @@ class OfficeIntegration:
             raise OfficeIntegrationError(
                 "invalid_bootstrap_secret", "A bootstrap secret is required"
             )
+
+        encoded_secret = quote(secret, safe="")
+        bootstrap_url = (
+            f"{self.gateway_url}/office/bootstrap/{encoded_secret}"
+        )
+        return before_status, bootstrap_url
+
+    def _setup_locked(self, secret: str) -> dict[str, Any]:
+        """写入受管清单和注册值，失败时恢复操作前快照。"""
+        before_status, bootstrap_url = self._validate_setup_preconditions(secret)
 
         registry_before = {}
         files_before = {}
@@ -1004,10 +1064,6 @@ class OfficeIntegration:
             except OSError as exc:
                 raise OfficeIntegrationError("setup_failed") from exc
 
-        encoded_secret = quote(secret, safe="")
-        bootstrap_url = (
-            f"{self.gateway_url}/office/bootstrap/{encoded_secret}"
-        )
         rendered = {
             spec.key: self._render_manifest(spec, bootstrap_url)
             for spec in _APP_SPECS
@@ -1085,6 +1141,13 @@ class OfficeIntegration:
                         "developer_override_conflict"
                     )
             current_status = self.status()
+            if (
+                current_status["conflict"]
+                or not current_status["managed_installed"]
+            ):
+                raise OfficeIntegrationError(
+                    "developer_override_conflict"
+                )
         except Exception as exc:
             registry_restored = self._restore_registry_snapshot(
                 registry_before, attempted_registry, expected_registry
@@ -1107,11 +1170,172 @@ class OfficeIntegration:
             "status": current_status,
         }
 
+    @staticmethod
+    def _same_registry_value(actual: Any, expected: Any) -> bool:
+        """比较注册表值，并对路径值使用 Windows 路径等价规则。"""
+        if actual is _MISSING or expected is _MISSING:
+            return actual is expected
+        if actual == expected:
+            return True
+        if isinstance(actual, (str, os.PathLike)) and isinstance(
+            expected, (str, os.PathLike)
+        ):
+            return OfficeIntegration._same_path(actual, Path(os.fspath(expected)))
+        return False
+
+    def _restore_repaired_registry_values(
+        self,
+        registry_before: Mapping[str, Any],
+        specs: list[_AppSpec],
+    ) -> bool:
+        """恢复修复前的外部注册值，同时避免覆盖并发写入的新值。"""
+        restored = True
+        for spec in reversed(specs):
+            previous = registry_before[spec.key]
+            try:
+                current = self._registry_query(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+            except Exception:
+                restored = False
+                continue
+
+            if self._same_registry_value(current, previous):
+                continue
+            if current is not _MISSING:
+                # A new external writer owns this value now. Never overwrite it
+                # while compensating for this request.
+                restored = False
+                continue
+
+            try:
+                self._registry_set(
+                    _HKCU,
+                    DEVELOPER_REGISTRY_PATH,
+                    spec.manifest_id,
+                    str(previous),
+                )
+            except Exception:
+                try:
+                    current = self._registry_query(
+                        _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                    )
+                except Exception:
+                    restored = False
+                    continue
+                if not self._same_registry_value(current, previous):
+                    restored = False
+                continue
+
+            try:
+                current = self._registry_query(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+            except Exception:
+                restored = False
+                continue
+            if not self._same_registry_value(current, previous):
+                restored = False
+        return restored
+
+    def repair_conflicts(self, secret: str) -> dict[str, Any]:
+        """在共享互斥锁内修复开发者注册冲突。"""
+        with self._mutation_lock:
+            return self._repair_conflicts_locked(secret)
+
+    def _repair_conflicts_locked(self, secret: str) -> dict[str, Any]:
+        """预校验清单后移除冲突值并安装受管项，失败时补偿恢复。"""
+        _, bootstrap_url = self._validate_setup_preconditions(secret)
+
+        # Validate every template before removing an external registration.
+        for spec in _APP_SPECS:
+            self._render_manifest(spec, bootstrap_url)
+
+        registry_before: dict[str, Any] = {}
+        conflicts: list[_AppSpec] = []
+        for spec in _APP_SPECS:
+            current = self._registry_query(
+                _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+            )
+            if current is not _MISSING and not self._same_path(
+                current, self.manifest_paths[spec.key]
+            ):
+                registry_before[spec.key] = current
+                conflicts.append(spec)
+
+        if not conflicts:
+            result = dict(self._setup_locked(secret))
+            result["repaired_apps"] = []
+            return result
+
+        attempted_deletions: list[_AppSpec] = []
+        deleted_specs: list[_AppSpec] = []
+        try:
+            # Check the complete snapshot once before the first mutation so a
+            # known race does not cause an avoidable partial repair.
+            deletions: list[_AppSpec] = []
+            for spec in conflicts:
+                current = self._registry_query(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+                if current is _MISSING or self._same_path(
+                    current, self.manifest_paths[spec.key]
+                ):
+                    continue
+                if not self._same_registry_value(
+                    current, registry_before[spec.key]
+                ):
+                    raise OfficeIntegrationError("repair_failed")
+                deletions.append(spec)
+
+            for spec in deletions:
+                current = self._registry_query(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+                if current is _MISSING or self._same_path(
+                    current, self.manifest_paths[spec.key]
+                ):
+                    continue
+                if not self._same_registry_value(
+                    current, registry_before[spec.key]
+                ):
+                    raise OfficeIntegrationError("repair_failed")
+
+                attempted_deletions.append(spec)
+                self._registry_delete(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+                verified = self._registry_query(
+                    _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
+                )
+                if verified is not _MISSING:
+                    raise OfficeIntegrationError("repair_failed")
+                deleted_specs.append(spec)
+
+            setup_result = dict(self._setup_locked(secret))
+        except Exception as exc:
+            registry_restored = self._restore_repaired_registry_values(
+                registry_before, attempted_deletions
+            )
+            nested_rollback_failed = (
+                isinstance(exc, OfficeIntegrationError)
+                and exc.code.endswith("_rollback_failed")
+            )
+            if not registry_restored or nested_rollback_failed:
+                raise OfficeIntegrationError("repair_rollback_failed") from exc
+            raise OfficeIntegrationError("repair_failed") from exc
+
+        setup_result["changed"] = bool(deleted_specs) or setup_result["changed"]
+        setup_result["repaired_apps"] = [spec.key for spec in deleted_specs]
+        return setup_result
+
     def remove(self) -> dict[str, Any]:
+        """在共享互斥锁内移除受管 Office 加载项。"""
         with self._mutation_lock:
             return self._remove_locked()
 
     def _remove_locked(self) -> dict[str, Any]:
+        """删除自身持有的注册值和清单，失败时恢复操作前快照。"""
         registry_before = {}
         files_before = {}
         for spec in _APP_SPECS:

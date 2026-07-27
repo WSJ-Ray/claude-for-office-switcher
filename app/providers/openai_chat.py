@@ -27,6 +27,7 @@ class OpenAIChatAdapter(BaseProvider):
     format = "openai_chat"
 
     def _headers(self) -> dict:
+        """构造 Chat Completions 请求所需的认证和流式响应头。"""
         # 自定义 User-Agent，避免 Cloudflare WAF 把 httpx 默认 UA 当作 bot 拦截（403）
         ua = (self.extra.get("user_agent")
               or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -256,6 +257,7 @@ class OpenAIChatAdapter(BaseProvider):
 
                     # ── 标准 SSE 路径 ─────────────────────────────────
                     async def _iter():
+                        """将已收集的响应字节重新分块为异步迭代器。"""
                         for i in range(0, len(raw), 8192):
                             yield raw[i:i+8192]
 

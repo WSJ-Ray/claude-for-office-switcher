@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 import httpx
 from PIL import Image, ImageDraw
@@ -20,11 +20,195 @@ WINDOW_TITLE = "Office Gateway"
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 TRAY_ICON_PATH = RESOURCE_DIR / "assets" / "favicon.ico"
 
+ERROR_ACCESS_DENIED = 5
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMWA_MICA_EFFECT = 1029
+
+DWMSBT_NONE = 1
+
+
+def enable_per_monitor_v2_dpi_awareness() -> bool:
+    """Enable crisp per-monitor rendering when no manifest has done so already."""
+    try:
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            return False
+
+        user32 = win_dll("user32", use_last_error=True)
+        set_awareness = user32.SetProcessDpiAwarenessContext
+        set_awareness.argtypes = [ctypes.c_void_p]
+        set_awareness.restype = ctypes.c_bool
+
+        set_last_error = getattr(ctypes, "set_last_error", None)
+        if set_last_error is not None:
+            set_last_error(0)
+
+        enabled = bool(
+            set_awareness(
+                ctypes.c_void_p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            )
+        )
+        if enabled:
+            return True
+
+        # A manifest or another host may have configured DPI awareness first.
+        error_code = getattr(ctypes, "get_last_error", lambda: 0)()
+        if error_code == ERROR_ACCESS_DENIED:
+            return False
+    except Exception:
+        pass
+
+    return False
+
+
+class WindowsTitleBarAdapter:
+    """Apply a light DWM caption without replacing the native window frame."""
+
+    _ATTRIBUTES = (
+        (DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.c_int, 0),
+        (DWMWA_SYSTEMBACKDROP_TYPE, ctypes.c_int, DWMSBT_NONE),
+        (DWMWA_MICA_EFFECT, ctypes.c_int, 0),
+        (DWMWA_CAPTION_COLOR, ctypes.c_uint32, 0x00FFFFFF),
+        (DWMWA_TEXT_COLOR, ctypes.c_uint32, 0x002A170F),
+        (DWMWA_BORDER_COLOR, ctypes.c_uint32, 0x00F0E8E2),
+    )
+
+    def __init__(
+        self,
+        dwm_set_window_attribute: Callable[..., int] | None = None,
+    ) -> None:
+        self._dwm_set_window_attribute = dwm_set_window_attribute
+        self._window = None
+        self._attached_window = None
+        self._activation_source = None
+
+    @staticmethod
+    def _native_handle(window) -> int | None:
+        """Extract a Win32 HWND from pywebview's WinForms wrapper."""
+        try:
+            native = getattr(window, "native", None)
+            handle = getattr(native, "Handle", None)
+        except Exception:
+            return None
+        if handle is None:
+            return None
+
+        if isinstance(handle, int):
+            return handle or None
+
+        for conversion in ("ToInt64", "ToInt32"):
+            convert = getattr(handle, conversion, None)
+            if callable(convert):
+                try:
+                    value = int(convert())
+                    return value or None
+                except Exception:
+                    continue
+
+        try:
+            value = int(handle)
+            return value or None
+        except Exception:
+            return None
+
+    def _resolve_dwm_setter(self) -> Callable[..., int] | None:
+        if self._dwm_set_window_attribute is not None:
+            return self._dwm_set_window_attribute
+
+        try:
+            win_dll = getattr(ctypes, "WinDLL", None)
+            if win_dll is None:
+                return None
+
+            setter = win_dll("dwmapi").DwmSetWindowAttribute
+            setter.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+            ]
+            setter.restype = ctypes.c_long
+            self._dwm_set_window_attribute = setter
+            return setter
+        except Exception:
+            return None
+
+    def attach(self, window) -> None:
+        """Apply after first render and reapply whenever Windows activates it."""
+        self._window = window
+        if self._attached_window is window:
+            return
+
+        try:
+            window.events.shown += self._on_shown
+        except Exception:
+            return
+
+        self._attached_window = window
+
+    def apply(self) -> bool:
+        """Best-effort DWM styling; unsupported attributes never block startup."""
+        if self._window is None:
+            return False
+
+        hwnd = self._native_handle(self._window)
+        setter = self._resolve_dwm_setter()
+        if hwnd is None or setter is None:
+            return False
+
+        applied_all = True
+        for attribute, value_type, raw_value in self._ATTRIBUTES:
+            value = value_type(raw_value)
+            try:
+                result = setter(
+                    hwnd,
+                    attribute,
+                    ctypes.byref(value),
+                    ctypes.sizeof(value),
+                )
+                result_code = getattr(result, "value", result)
+                if result_code != 0:
+                    applied_all = False
+            except Exception:
+                applied_all = False
+
+        return applied_all
+
+    def _bind_activation(self) -> None:
+        try:
+            native = getattr(self._window, "native", None)
+        except Exception:
+            return
+        if native is None or self._activation_source is native:
+            return
+
+        try:
+            native.Activated += self._on_activated
+        except Exception:
+            return
+
+        self._activation_source = native
+
+    def _on_shown(self, *_args) -> None:
+        self.apply()
+        self._bind_activation()
+
+    def _on_activated(self, *_args) -> None:
+        self.apply()
+
 
 class TrayIcon(Protocol):
     """The subset of the pystray icon API used by the launcher."""
 
-    def stop(self) -> None: ...
+    def stop(self) -> None:
+        """停止托盘图标事件循环。"""
+        ...
 
 
 class DesktopGatewayApp:
@@ -36,6 +220,7 @@ class DesktopGatewayApp:
         port: int | None = None,
         readiness_timeout: int = 30,
     ) -> None:
+        """初始化本地服务、窗口和托盘组件的运行状态。"""
         self.host = host or os.getenv("HOST", "127.0.0.1")
         self.port = port if port is not None else int(os.getenv("PORT", "4000"))
         self.base_url = f"http://{self.host}:{self.port}"
@@ -46,8 +231,10 @@ class DesktopGatewayApp:
         self.tray: TrayIcon | None = None
         self.tray_thread: threading.Thread | None = None
         self.is_exiting = False
+        self.title_bar = WindowsTitleBarAdapter()
 
     def _serve(self) -> None:
+        """在当前后台线程中运行 Uvicorn 服务。"""
         config = uvicorn.Config(
             app,
             host=self.host,
@@ -59,10 +246,12 @@ class DesktopGatewayApp:
         self.server.run()
 
     def _start_server(self) -> None:
+        """创建守护线程并启动网关服务。"""
         self.server_thread = threading.Thread(target=self._serve, daemon=True)
         self.server_thread.start()
 
     def _wait_until_ready(self) -> bool:
+        """轮询健康检查，直至服务就绪或等待超时。"""
         deadline = time.monotonic() + self.readiness_timeout
         while time.monotonic() < deadline:
             try:
@@ -76,6 +265,7 @@ class DesktopGatewayApp:
 
     @staticmethod
     def _create_tray_image() -> Image.Image:
+        """读取打包托盘图标，读取失败时生成备用图标。"""
         try:
             with Image.open(TRAY_ICON_PATH) as icon:
                 return icon.convert("RGBA")
@@ -84,6 +274,7 @@ class DesktopGatewayApp:
 
     @staticmethod
     def _create_fallback_tray_image() -> Image.Image:
+        """绘制不依赖外部资源的备用托盘图标。"""
         image = Image.new("RGBA", (64, 64), (15, 23, 42, 255))
         draw = ImageDraw.Draw(image)
         draw.rounded_rectangle((10, 10, 54, 54), radius=8, fill=(8, 145, 178, 255))
@@ -94,6 +285,7 @@ class DesktopGatewayApp:
         return image
 
     def _start_tray(self) -> None:
+        """创建托盘菜单并在守护线程中启动图标事件循环。"""
         menu = pystray.Menu(
             pystray.MenuItem("Show Office Gateway", lambda _icon, _item: self._show_window()),
             pystray.MenuItem("Exit", lambda _icon, _item: self._exit_application()),
@@ -108,6 +300,7 @@ class DesktopGatewayApp:
         self.tray_thread.start()
 
     def _hide_window(self) -> bool:
+        """拦截窗口关闭操作并隐藏窗口，退出过程中则允许关闭。"""
         if self.is_exiting:
             return True
         if self.window is not None:
@@ -115,12 +308,14 @@ class DesktopGatewayApp:
         return False
 
     def _show_window(self) -> None:
+        """显示并恢复已创建的桌面窗口。"""
         if self.window is None:
             return
         self.window.show()
         self.window.restore()
 
     def _exit_application(self) -> None:
+        """以幂等方式请求停止服务、托盘和桌面窗口。"""
         if self.is_exiting:
             return
         self.is_exiting = True
@@ -132,6 +327,7 @@ class DesktopGatewayApp:
             self.window.destroy()
 
     def _stop_server(self) -> None:
+        """请求 Uvicorn 退出并等待服务线程结束。"""
         if self.server is not None:
             self.server.should_exit = True
         if self.server_thread is not None:
@@ -139,6 +335,7 @@ class DesktopGatewayApp:
 
     @staticmethod
     def _show_startup_error(message: str) -> None:
+        """记录启动错误，并尽可能显示 Windows 错误对话框。"""
         print(message, flush=True)
         try:
             ctypes.windll.user32.MessageBoxW(None, message, WINDOW_TITLE, 0x10)
@@ -146,6 +343,7 @@ class DesktopGatewayApp:
             pass
 
     def run(self) -> int:
+        """启动网关、WebView 和托盘，并返回桌面进程退出码。"""
         try:
             self._start_server()
             if not self._wait_until_ready():
@@ -153,14 +351,20 @@ class DesktopGatewayApp:
 
             self.window = webview.create_window(
                 WINDOW_TITLE,
-                self.base_url,
+                f"{self.base_url}/?desktop=1",
                 width=1280,
                 height=840,
+                resizable=True,
                 min_size=(960, 640),
+                frameless=False,
+                easy_drag=False,
+                shadow=True,
+                background_color="#FFFFFF",
             )
             self.window.events.closing += self._hide_window
+            self.title_bar.attach(self.window)
             self._start_tray()
-            webview.start(gui="edgechromium")
+            webview.start(gui="edgechromium", icon=str(TRAY_ICON_PATH))
             return 0
         except Exception as exc:
             self._show_startup_error(
@@ -175,6 +379,8 @@ class DesktopGatewayApp:
 
 
 def main() -> int:
+    """创建桌面应用并运行主生命周期。"""
+    enable_per_monitor_v2_dpi_awareness()
     return DesktopGatewayApp().run()
 
 

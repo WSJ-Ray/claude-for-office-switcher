@@ -46,6 +46,13 @@ class OfficeApiTests(unittest.TestCase):
         self.status_payload["excel"] = self.status_payload["apps"]["excel"]
         self.service.status.return_value = self.status_payload
         self.service.setup.return_value = {"changed": True, "restart_required": False}
+        self.repair_payload = {
+            "changed": True,
+            "repaired_apps": ["word", "excel"],
+            "restart_required": True,
+            "status": self.status_payload,
+        }
+        self.service.repair_conflicts.return_value = self.repair_payload
         self.service.remove.return_value = {"changed": True, "restart_required": True}
         self.integration_patch = patch.object(
             office, "get_office_integration", return_value=self.service
@@ -126,13 +133,16 @@ class OfficeApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["local_access"])
 
-    def test_remote_setup_and_remove_are_rejected_without_service_calls(self):
+    def test_remote_mutations_are_rejected_without_service_calls(self):
         self._set_gateway_token()
         with TestClient(
             self.app, client=("192.0.2.10", 51002)
         ) as remote_client:
             setup_response = remote_client.post(
                 "/admin/office/setup", headers=AUTH_HEADERS
+            )
+            repair_response = remote_client.post(
+                "/admin/office/conflicts/repair", headers=AUTH_HEADERS
             )
             remove_response = remote_client.delete(
                 "/admin/office/setup", headers=AUTH_HEADERS
@@ -141,9 +151,12 @@ class OfficeApiTests(unittest.TestCase):
         expected = {"detail": self._local_access_detail()}
         self.assertEqual(setup_response.status_code, 409)
         self.assertEqual(setup_response.json(), expected)
+        self.assertEqual(repair_response.status_code, 409)
+        self.assertEqual(repair_response.json(), expected)
         self.assertEqual(remove_response.status_code, 409)
         self.assertEqual(remove_response.json(), expected)
         self.service.setup.assert_not_called()
+        self.service.repair_conflicts.assert_not_called()
         self.service.remove.assert_not_called()
 
     def test_setup_requires_gateway_token_before_creating_secret(self):
@@ -155,6 +168,28 @@ class OfficeApiTests(unittest.TestCase):
             db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
         )
         self.service.setup.assert_not_called()
+
+    def test_repair_requires_gateway_token_before_creating_secret(self):
+        response = self.client.post("/admin/office/conflicts/repair")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"detail": self._gateway_token_detail()})
+        self.assertIsNone(
+            db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        )
+        self.service.repair_conflicts.assert_not_called()
+
+    def test_repair_requires_auth_when_gateway_token_exists(self):
+        self._set_gateway_token()
+
+        response = self.client.post("/admin/office/conflicts/repair")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json(), {"detail": "Invalid token"})
+        self.assertIsNone(
+            db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        )
+        self.service.repair_conflicts.assert_not_called()
 
     def test_bootstrap_secret_is_stable_under_concurrent_creation(self):
         with ThreadPoolExecutor(max_workers=8) as executor:
@@ -200,6 +235,19 @@ class OfficeApiTests(unittest.TestCase):
         secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
         self.assertTrue(secret)
         self.service.setup.assert_called_once_with(secret)
+
+    def test_repair_creates_secret_and_returns_service_result(self):
+        self._set_gateway_token()
+
+        response = self.client.post(
+            "/admin/office/conflicts/repair", headers=AUTH_HEADERS
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), self.repair_payload)
+        secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        self.assertTrue(secret)
+        self.service.repair_conflicts.assert_called_once_with(secret)
 
     def test_remove_returns_service_result_without_requiring_gateway_token(self):
         response = self.client.delete("/admin/office/setup")
@@ -295,6 +343,68 @@ class OfficeApiTests(unittest.TestCase):
         )
         self.service.setup.assert_called_once_with(bootstrap_secret)
         self.service.remove.assert_called_once_with()
+
+    def test_repair_domain_failures_map_to_stable_server_errors(self):
+        self._set_gateway_token()
+        cases = (
+            (
+                "repair_failed",
+                "Office developer override repair failed.",
+            ),
+            (
+                "repair_rollback_failed",
+                (
+                    "Office developer override repair failed and could not be "
+                    "fully restored."
+                ),
+            ),
+        )
+
+        for code, expected_message in cases:
+            with self.subTest(code=code):
+                self.service.repair_conflicts.reset_mock()
+                self.service.repair_conflicts.side_effect = OfficeIntegrationError(
+                    code
+                )
+
+                response = self.client.post(
+                    "/admin/office/conflicts/repair", headers=AUTH_HEADERS
+                )
+
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(
+                    response.json(),
+                    {
+                        "detail": {
+                            "code": code,
+                            "message": expected_message,
+                        }
+                    },
+                )
+
+        self.service.repair_conflicts.side_effect = None
+
+    def test_repair_unexpected_errors_do_not_leak_exception_text(self):
+        self._set_gateway_token()
+        self.service.repair_conflicts.side_effect = RuntimeError(
+            "registry-path=C:\\sensitive"
+        )
+
+        response = self.client.post(
+            "/admin/office/conflicts/repair", headers=AUTH_HEADERS
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": {
+                    "code": "office_integration_failed",
+                    "message": "The Office integration operation failed.",
+                }
+            },
+        )
+        self.assertNotIn("sensitive", response.text)
 
     def test_unexpected_errors_do_not_leak_exception_text(self):
         self.service.status.side_effect = RuntimeError("credential=sk-sensitive")
@@ -478,6 +588,7 @@ class OfficeApiTests(unittest.TestCase):
 
         self.assertIn("/admin/office/status", route_paths)
         self.assertIn("/admin/office/setup", route_paths)
+        self.assertIn("/admin/office/conflicts/repair", route_paths)
         self.assertIn("/office/bootstrap/{secret}", route_paths)
         self.assertEqual(bootstrap_response.status_code, 200)
         self.assertEqual(bootstrap_response.headers["vary"], "Origin")

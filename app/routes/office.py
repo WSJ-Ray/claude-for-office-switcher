@@ -58,10 +58,12 @@ _UNEXPECTED_ERROR_DETAIL = {
 
 @lru_cache(maxsize=1)
 def get_office_integration() -> OfficeIntegration:
+    """返回进程内复用的 Office 集成服务实例。"""
     return OfficeIntegration()
 
 
 def _is_local_request(request: Request) -> bool:
+    """判断请求客户端地址是否为本机回环地址。"""
     if request.client is None:
         return False
     try:
@@ -71,6 +73,7 @@ def _is_local_request(request: Request) -> bool:
 
 
 def _raise_office_error(error: Exception, headers=None) -> None:
+    """将 Office 领域异常映射为不泄露内部信息的 HTTP 异常。"""
     if isinstance(error, OfficeIntegrationError):
         status_code = 409 if error.code in _CONFLICT_ERROR_CODES else 500
         detail = {"code": error.code, "message": error.message}
@@ -86,6 +89,7 @@ def _raise_office_error(error: Exception, headers=None) -> None:
 
 @router.get("/admin/office/status")
 def office_status(request: Request):
+    """返回 Office 安装、加载项注册和网关就绪状态。"""
     verify_auth(request)
     try:
         status = dict(get_office_integration().status())
@@ -98,6 +102,7 @@ def office_status(request: Request):
 
 @router.post("/admin/office/setup")
 def setup_office(request: Request):
+    """为本机 Office 安装并注册受管加载项清单。"""
     verify_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
@@ -111,8 +116,25 @@ def setup_office(request: Request):
         _raise_office_error(error)
 
 
+@router.post("/admin/office/conflicts/repair")
+def repair_office_conflicts(request: Request):
+    """修复外部开发者注册冲突并重新安装受管加载项。"""
+    verify_auth(request)
+    if not _is_local_request(request):
+        raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
+    if not db.has_gateway_token():
+        raise HTTPException(status_code=409, detail=dict(_GATEWAY_TOKEN_DETAIL))
+
+    try:
+        secret = db.get_or_create_office_bootstrap_secret()
+        return get_office_integration().repair_conflicts(secret)
+    except Exception as error:
+        _raise_office_error(error)
+
+
 @router.delete("/admin/office/setup")
 def remove_office(request: Request):
+    """移除本机受管 Office 加载项注册和清单。"""
     verify_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
@@ -125,6 +147,7 @@ def remove_office(request: Request):
 
 @router.get("/office/bootstrap/{secret}")
 def office_bootstrap(secret: str, request: Request):
+    """校验来源与引导密钥后向 Office 加载项返回连接配置。"""
     if request.headers.get("Origin") != PIVOT_ORIGIN:
         raise HTTPException(
             status_code=403,
