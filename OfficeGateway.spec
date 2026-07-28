@@ -5,8 +5,13 @@ from PyInstaller.utils.hooks import collect_all
 
 
 manifest_path = str(Path(SPECPATH) / 'assets' / 'OfficeGateway.manifest')
+repository_root = Path(SPECPATH)
 
-datas = [('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\static', 'static'), ('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico', 'assets'), ('C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\app\\assets\\office', 'app/assets/office')]
+datas = [
+    (str(repository_root / 'static'), 'static'),
+    (str(repository_root / 'assets' / 'favicon.ico'), 'assets'),
+    (str(repository_root / 'app' / 'assets' / 'office'), 'app/assets/office'),
+]
 binaries = []
 hiddenimports = ['webview.platforms.edgechromium', 'pystray._win32', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan.on']
 tmp_ret = collect_all('webview')
@@ -18,7 +23,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\desktop_launcher.py'],
+    [str(repository_root / 'desktop_launcher.py')],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -51,6 +56,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\wsj30\\Desktop\\deepseek-office-gateway-main\\assets\\favicon.ico'],
+    icon=[str(repository_root / 'assets' / 'favicon.ico')],
     manifest=manifest_path,
 )

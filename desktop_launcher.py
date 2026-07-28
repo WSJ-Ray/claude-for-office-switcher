@@ -32,6 +32,86 @@ DWMWA_MICA_EFFECT = 1029
 
 DWMSBT_NONE = 1
 
+# pywebview sizes the outer WinForms window, so reserve room for the native
+# caption and resize border while keeping the intended WebView viewport.
+WINDOW_WIDTH = 1296
+WINDOW_HEIGHT = 880
+WINDOW_MIN_SIZE = (976, 680)
+
+
+class _Rect(ctypes.Structure):
+    _fields_ = (
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    )
+
+
+def _primary_work_area_logical(user32=None) -> tuple[int, int, int, int] | None:
+    """Return the primary work area in 96-DPI logical pixels."""
+    try:
+        if user32 is None:
+            win_dll = getattr(ctypes, "WinDLL", None)
+            if win_dll is None:
+                return None
+            user32 = win_dll("user32")
+
+        get_work_area = user32.SystemParametersInfoW
+        get_work_area.argtypes = [
+            ctypes.c_uint,
+            ctypes.c_uint,
+            ctypes.c_void_p,
+            ctypes.c_uint,
+        ]
+        get_work_area.restype = ctypes.c_bool
+        work_area = _Rect()
+        if not get_work_area(0x0030, 0, ctypes.byref(work_area), 0):
+            return None
+
+        try:
+            get_dpi = user32.GetDpiForSystem
+            get_dpi.argtypes = []
+            get_dpi.restype = ctypes.c_uint
+            dpi = max(96, int(get_dpi()))
+        except Exception:
+            dpi = 96
+
+        scale = dpi / 96
+        left = round(work_area.left / scale)
+        top = round(work_area.top / scale)
+        right = round(work_area.right / scale)
+        bottom = round(work_area.bottom / scale)
+        return left, top, right - left, bottom - top
+    except Exception:
+        return None
+
+
+def resolve_initial_window_geometry(
+    work_area: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int | None, int | None]:
+    """Fit and center the outer window within the primary screen work area."""
+    work_area = work_area or _primary_work_area_logical()
+    if work_area is None:
+        return WINDOW_WIDTH, WINDOW_HEIGHT, None, None
+
+    work_x, work_y, work_width, work_height = work_area
+    width = max(WINDOW_MIN_SIZE[0], min(WINDOW_WIDTH, work_width))
+    height = max(WINDOW_MIN_SIZE[1], min(WINDOW_HEIGHT, work_height))
+    x = work_x + max(0, (work_width - width) // 2)
+    y = work_y + max(0, (work_height - height) // 2)
+    return width, height, x, y
+
+
+def is_webview2_runtime_available() -> bool:
+    """Use pywebview's pinned WinForms probe before it can fall back to MSHTML."""
+    try:
+        from webview.platforms import winforms
+
+        return bool(winforms._is_chromium())
+    except Exception:
+        return False
+
 
 def enable_per_monitor_v2_dpi_awareness() -> bool:
     """Enable crisp per-monitor rendering when no manifest has done so already."""
@@ -82,11 +162,14 @@ class WindowsTitleBarAdapter:
     def __init__(
         self,
         dwm_set_window_attribute: Callable[..., int] | None = None,
+        system_events=None,
     ) -> None:
         self._dwm_set_window_attribute = dwm_set_window_attribute
+        self._system_events = system_events
         self._window = None
         self._attached_window = None
         self._activation_source = None
+        self._theme_source = None
 
     @staticmethod
     def _native_handle(window) -> int | None:
@@ -195,11 +278,39 @@ class WindowsTitleBarAdapter:
 
         self._activation_source = native
 
+    def _resolve_system_events(self):
+        if self._system_events is not None:
+            return self._system_events
+
+        try:
+            from webview.platforms import winforms
+
+            self._system_events = winforms.SystemEvents
+            return self._system_events
+        except Exception:
+            return None
+
+    def _bind_theme_change(self) -> None:
+        system_events = self._resolve_system_events()
+        if system_events is None or self._theme_source is system_events:
+            return
+
+        try:
+            system_events.UserPreferenceChanged += self._on_system_theme_changed
+        except Exception:
+            return
+
+        self._theme_source = system_events
+
     def _on_shown(self, *_args) -> None:
         self.apply()
         self._bind_activation()
+        self._bind_theme_change()
 
     def _on_activated(self, *_args) -> None:
+        self.apply()
+
+    def _on_system_theme_changed(self, *_args) -> None:
         self.apply()
 
 
@@ -219,12 +330,16 @@ class DesktopGatewayApp:
         host: str | None = None,
         port: int | None = None,
         readiness_timeout: int = 30,
+        webview2_runtime_probe: Callable[[], bool] | None = None,
     ) -> None:
         """初始化本地服务、窗口和托盘组件的运行状态。"""
         self.host = host or os.getenv("HOST", "127.0.0.1")
         self.port = port if port is not None else int(os.getenv("PORT", "4000"))
         self.base_url = f"http://{self.host}:{self.port}"
         self.readiness_timeout = readiness_timeout
+        self.webview2_runtime_probe = (
+            webview2_runtime_probe or is_webview2_runtime_available
+        )
         self.server: uvicorn.Server | None = None
         self.server_thread: threading.Thread | None = None
         self.window = None
@@ -320,18 +435,33 @@ class DesktopGatewayApp:
             return
         self.is_exiting = True
         if self.server is not None:
-            self.server.should_exit = True
+            try:
+                self.server.should_exit = True
+            except Exception:
+                pass
         if self.tray is not None:
-            self.tray.stop()
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         if self.window is not None:
-            self.window.destroy()
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
 
     def _stop_server(self) -> None:
         """请求 Uvicorn 退出并等待服务线程结束。"""
         if self.server is not None:
-            self.server.should_exit = True
+            try:
+                self.server.should_exit = True
+            except Exception:
+                pass
         if self.server_thread is not None:
-            self.server_thread.join(timeout=5)
+            try:
+                self.server_thread.join(timeout=5)
+            except Exception:
+                pass
 
     @staticmethod
     def _show_startup_error(message: str) -> None:
@@ -345,21 +475,27 @@ class DesktopGatewayApp:
     def run(self) -> int:
         """启动网关、WebView 和托盘，并返回桌面进程退出码。"""
         try:
+            if not self.webview2_runtime_probe():
+                raise RuntimeError("Microsoft Edge WebView2 Runtime is unavailable.")
+
             self._start_server()
             if not self._wait_until_ready():
                 raise RuntimeError(f"Office Gateway did not become ready at {self.base_url}.")
 
+            width, height, x, y = resolve_initial_window_geometry()
+            position = {"x": x, "y": y} if x is not None and y is not None else {}
             self.window = webview.create_window(
                 WINDOW_TITLE,
                 f"{self.base_url}/?desktop=1",
-                width=1280,
-                height=840,
+                width=width,
+                height=height,
                 resizable=True,
-                min_size=(960, 640),
+                min_size=WINDOW_MIN_SIZE,
                 frameless=False,
                 easy_drag=False,
                 shadow=True,
                 background_color="#FFFFFF",
+                **position,
             )
             self.window.events.closing += self._hide_window
             self.title_bar.attach(self.window)

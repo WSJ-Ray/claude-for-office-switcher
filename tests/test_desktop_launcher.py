@@ -28,6 +28,7 @@ class DesktopGatewayAppTests(unittest.TestCase):
             host="127.0.0.1",
             port=4123,
             readiness_timeout=0,
+            webview2_runtime_probe=lambda: True,
         )
         self.window = Mock()
         self.window.events = SimpleNamespace(
@@ -52,6 +53,7 @@ class DesktopGatewayAppTests(unittest.TestCase):
 
     def test_title_bar_applies_light_dwm_attributes_after_window_is_shown(self):
         calls = []
+        system_events = SimpleNamespace(UserPreferenceChanged=ClosingEvent())
 
         def set_attribute(hwnd, attribute, value_pointer, value_size):
             value = ctypes.cast(
@@ -62,7 +64,10 @@ class DesktopGatewayAppTests(unittest.TestCase):
             return 0
 
         window, shown, _activated = self._window_with_native_handle()
-        adapter = desktop_launcher.WindowsTitleBarAdapter(set_attribute)
+        adapter = desktop_launcher.WindowsTitleBarAdapter(
+            set_attribute,
+            system_events=system_events,
+        )
 
         adapter.attach(window)
         shown.fire()
@@ -81,20 +86,73 @@ class DesktopGatewayAppTests(unittest.TestCase):
         self.assertTrue(all(hwnd == 0x1234 for hwnd, *_ in calls))
         self.assertTrue(all(size == 4 for *_, size in calls))
 
+    def test_primary_work_area_converts_physical_pixels_using_system_dpi(self):
+        user32 = SimpleNamespace(
+            SystemParametersInfoW=Mock(return_value=True),
+            GetDpiForSystem=Mock(return_value=144),
+        )
+
+        def set_work_area(_action, _param, rect_pointer, _flags):
+            rect = rect_pointer._obj
+            rect.left = 0
+            rect.top = 0
+            rect.right = 2560
+            rect.bottom = 1368
+            return True
+
+        user32.SystemParametersInfoW.side_effect = set_work_area
+
+        work_area = desktop_launcher._primary_work_area_logical(user32)
+
+        self.assertEqual((0, 0, 1707, 912), work_area)
+
+    def test_window_geometry_centers_in_primary_work_area(self):
+        geometry = desktop_launcher.resolve_initial_window_geometry(
+            (0, 0, 1707, 912)
+        )
+
+        self.assertEqual((1296, 880, 205, 16), geometry)
+
+    def test_window_geometry_fits_smaller_work_area(self):
+        geometry = desktop_launcher.resolve_initial_window_geometry(
+            (0, 0, 1100, 720)
+        )
+
+        self.assertEqual((1100, 720, 0, 0), geometry)
+
+    def test_window_geometry_falls_back_when_screens_are_unavailable(self):
+        with patch.object(
+            desktop_launcher,
+            "_primary_work_area_logical",
+            return_value=None,
+        ):
+            geometry = desktop_launcher.resolve_initial_window_geometry()
+
+        self.assertEqual(
+            (desktop_launcher.WINDOW_WIDTH, desktop_launcher.WINDOW_HEIGHT, None, None),
+            geometry,
+        )
+
     def test_title_bar_reapplies_on_activation_without_duplicate_bindings(self):
         set_attribute = Mock(return_value=0)
         window, shown, activated = self._window_with_native_handle()
-        adapter = desktop_launcher.WindowsTitleBarAdapter(set_attribute)
+        system_events = SimpleNamespace(UserPreferenceChanged=ClosingEvent())
+        adapter = desktop_launcher.WindowsTitleBarAdapter(
+            set_attribute,
+            system_events=system_events,
+        )
 
         adapter.attach(window)
         adapter.attach(window)
         shown.fire()
         shown.fire()
         activated.fire()
+        system_events.UserPreferenceChanged.fire()
 
         self.assertEqual(1, len(shown.handlers))
         self.assertEqual(1, len(activated.handlers))
-        self.assertEqual(18, set_attribute.call_count)
+        self.assertEqual(1, len(system_events.UserPreferenceChanged.handlers))
+        self.assertEqual(24, set_attribute.call_count)
 
     def test_title_bar_missing_native_handle_falls_back_without_dwm_calls(self):
         set_attribute = Mock(return_value=0)
@@ -219,8 +277,17 @@ class DesktopGatewayAppTests(unittest.TestCase):
         self.assertTrue(server.should_exit)
         self.tray.stop.assert_called_once_with()
 
+    @patch.object(
+        desktop_launcher,
+        "resolve_initial_window_geometry",
+        return_value=(1296, 880, 205, 16),
+    )
     @patch.object(desktop_launcher, "webview")
-    def test_run_opens_local_gateway_in_webview_after_readiness(self, webview):
+    def test_run_opens_local_gateway_in_webview_after_readiness(
+        self,
+        webview,
+        _resolve_geometry,
+    ):
         self.launcher._start_server = Mock()
         self.launcher._wait_until_ready = Mock(return_value=True)
         self.launcher._start_tray = Mock()
@@ -238,10 +305,12 @@ class DesktopGatewayAppTests(unittest.TestCase):
         webview.create_window.assert_called_once_with(
             "Office Gateway",
             "http://127.0.0.1:4123/?desktop=1",
-            width=1280,
-            height=840,
+            width=desktop_launcher.WINDOW_WIDTH,
+            height=desktop_launcher.WINDOW_HEIGHT,
+            x=205,
+            y=16,
             resizable=True,
-            min_size=(960, 640),
+            min_size=desktop_launcher.WINDOW_MIN_SIZE,
             frameless=False,
             easy_drag=False,
             shadow=True,
@@ -269,6 +338,43 @@ class DesktopGatewayAppTests(unittest.TestCase):
 
         self.assertEqual(1, exit_code)
         self.assertIn("WebView2", show_error.call_args.args[0])
+
+    def test_run_rejects_missing_webview2_before_starting_server(self):
+        self.launcher.webview2_runtime_probe = Mock(return_value=False)
+        self.launcher._start_server = Mock()
+
+        with patch.object(self.launcher, "_show_startup_error") as show_error:
+            exit_code = self.launcher.run()
+
+        self.assertEqual(1, exit_code)
+        self.launcher._start_server.assert_not_called()
+        self.assertIn("WebView2", show_error.call_args.args[0])
+
+    @patch.object(desktop_launcher, "webview")
+    def test_run_preserves_startup_error_when_unshown_window_cleanup_fails(
+        self,
+        webview,
+    ):
+        self.launcher._start_server = Mock()
+        self.launcher._wait_until_ready = Mock(return_value=True)
+        self.launcher._start_tray = Mock()
+        self.launcher._stop_server = Mock()
+        window = Mock()
+        window.events = SimpleNamespace(
+            closing=ClosingEvent(),
+            shown=ClosingEvent(),
+        )
+        window.destroy.side_effect = RuntimeError("Main window failed to start")
+        webview.create_window.return_value = window
+        webview.start.side_effect = RuntimeError("Edge Chromium unavailable")
+
+        with patch.object(self.launcher, "_show_startup_error") as show_error:
+            exit_code = self.launcher.run()
+
+        self.assertEqual(1, exit_code)
+        self.assertIn("Edge Chromium unavailable", show_error.call_args.args[0])
+        window.destroy.assert_called_once_with()
+        self.launcher._stop_server.assert_called_once_with()
 
     def test_run_reports_readiness_timeout_without_creating_window(self):
         self.launcher._start_server = Mock()

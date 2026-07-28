@@ -64,14 +64,16 @@ class WindowsPackagingTests(unittest.TestCase):
         spec = (REPOSITORY_ROOT / "OfficeGateway.spec").read_text(encoding="utf-8")
 
         self.assertIn(
-            '--manifest "$PSScriptRoot\\assets\\OfficeGateway.manifest"',
+            '"$PSScriptRoot\\OfficeGateway.spec"',
             build_script,
         )
+        self.assertNotIn('"$PSScriptRoot\\desktop_launcher.py"', build_script)
         self.assertIn(
             "Path(SPECPATH) / 'assets' / 'OfficeGateway.manifest'",
             spec,
         )
         self.assertIn("manifest=manifest_path", spec)
+        self.assertNotIn("C:\\\\Users\\\\", spec)
 
 
 if __name__ == "__main__":
