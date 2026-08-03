@@ -238,11 +238,11 @@ A: 在管理面板的"供应商管理"中添加，选择对应的 API 格式，�
 
 ## 未来开发方向
 
-### P1 — OpenAI Responses API 支持
-适配 OpenAI 最新的 [Responses API](https://platform.openai.com/docs/api-reference/responses)，在现有 Chat Completions 转换器之外增加新的适配器，使网关能够将 Anthropic 格式请求转发到 OpenAI 的 Responses 端点并正确转换响应。
+### ~~P1 — OpenAI Responses API 支持~~
+~~适配 OpenAI 最新的 [Responses API](https://platform.openai.com/docs/api-reference/responses)，在现有 Chat Completions 转换器之外增加新的适配器，使网关能够将 Anthropic 格式请求转发到 OpenAI 的 Responses 端点并正确转换响应。~~
 
-### P2 — 客户端桌面应用
-将网关打包为跨平台桌面客户端（Electron / Tauri），集成内嵌浏览器与 Office 插件配置向导，实现零命令行的一键启动体验。用户无需安装 Python、Node.js 或 Docker，下载即用。
+### ~~P2 — 客户端桌面应用~~
+~~将网关打包为跨平台桌面客户端（Electron / Tauri），集成内嵌浏览器与 Office 插件配置向导，实现零命令行的一键启动体验。用户无需安装 Python、Node.js 或 Docker，下载即用。~~
 
 ### P3 — [CC Switch](https://ccswitch.io/) 集成
 [CC Switch](https://ccswitch.io/) 是一款 Claude Code 模型切换工具，支持在不同模型供应商和模型规格之间快速切换。与之集成后，用户可在 Claude Code 中通过 CC Switch 直接调用本网关，实现编码场景与 Office 文档写作场景的模型供应商统一管理。
