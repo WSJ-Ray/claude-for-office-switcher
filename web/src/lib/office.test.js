@@ -87,6 +87,39 @@ test('uses reconfigure and restore actions for a managed installation', () => {
   assert.equal(state.hosts.excel.running, true)
 })
 
+test('exposes a per-application uninstall action for managed installations', () => {
+  const state = getOfficeUiState({
+    ...readyStatus,
+    apps: {
+      ...readyStatus.apps,
+      word: { ...readyStatus.apps.word, managed_installed: true },
+      powerpoint: { ...readyStatus.apps.powerpoint, managed_installed: true },
+    },
+  })
+
+  assert.equal(state.uninstall.word.visible, true)
+  assert.equal(state.uninstall.word.disabled, false)
+  assert.equal(state.uninstall.word.label, '卸载插件')
+  assert.equal(state.uninstall.powerpoint.visible, true)
+  assert.equal(state.uninstall.excel.visible, false)
+})
+
+test('exposes official plugin management for detected Marketplace installations', () => {
+  const marketplaceUrl = 'https://marketplace.microsoft.com/en-us/product/office/WA200010453'
+  const state = getOfficeUiState({
+    ...readyStatus,
+    apps: {
+      ...readyStatus.apps,
+      word: { ...readyStatus.apps.word, marketplace_url: marketplaceUrl },
+    },
+  })
+
+  assert.equal(state.manage.word.visible, true)
+  assert.equal(state.manage.word.disabled, false)
+  assert.equal(state.manage.word.url, marketplaceUrl)
+  assert.equal(state.manage.powerpoint.visible, false)
+})
+
 test('reports the official Claude Excel add-in independently of the gateway add-in', () => {
   const state = getOfficeUiState({
     ...readyStatus,

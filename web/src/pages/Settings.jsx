@@ -10,10 +10,13 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Settings2,
   ShieldAlert,
+  Trash2,
   Wrench
 } from 'lucide-react'
 import {
+  ConfirmDialog,
   Dialog,
   IconButton,
   InlineNotice,
@@ -55,6 +58,7 @@ export default function Settings() {
   const [tokenError, setTokenError] = useState(null)
   const [officeNotice, setOfficeNotice] = useState(null)
   const [repairOpen, setRepairOpen] = useState(false)
+  const [uninstallTarget, setUninstallTarget] = useState(null)
   const [pendingInstallApps, setPendingInstallApps] = useState([])
   const installTimers = useRef(new Map())
   const autoSetupStarted = useRef(new Set())
@@ -107,11 +111,19 @@ export default function Settings() {
   })
   const removeMutation = useMutation({
     mutationFn: removeOffice,
-    onSuccess: async (result) => {
+    onSuccess: async (result, apps) => {
+      setUninstallTarget(null)
       await refreshOffice()
-      setOfficeNotice({ type: 'removed', restart: result.restart_required })
+      setOfficeNotice({
+        type: Array.isArray(apps) ? 'uninstalled' : 'removed',
+        apps: result.removed_apps || apps || [],
+        restart: result.restart_required,
+      })
     },
-    onError: (error) => setOfficeNotice({ type: 'error', message: error.message })
+    onError: (error) => {
+      setUninstallTarget(null)
+      setOfficeNotice({ type: 'error', message: error.message })
+    }
   })
   const repairMutation = useMutation({
     mutationFn: repairOfficeConflicts,
@@ -182,6 +194,14 @@ export default function Settings() {
       setOfficeNotice({ type: 'store-timeout', app: key })
     }, 90000)
     installTimers.current.set(key, timer)
+  }
+
+  const handleMarketplaceManage = async (key, url) => {
+    if (!url) return
+    const opened = await openExternalUrl(url)
+    setOfficeNotice(opened
+      ? { type: 'manage-opened', app: key }
+      : { type: 'error', message: '无法打开 Microsoft Marketplace 页面。' })
   }
 
   return (
@@ -259,7 +279,12 @@ export default function Settings() {
                       meta={meta}
                       host={officeState.hosts[key]}
                       install={officeState.install[key]}
+                      uninstall={officeState.uninstall[key]}
+                      manage={officeState.manage[key]}
+                      busy={busy}
                       onInstall={() => handleMarketplaceInstall(key, officeState.install[key]?.url)}
+                      onUninstall={() => setUninstallTarget(key)}
+                      onManage={() => handleMarketplaceManage(key, officeState.manage[key]?.url)}
                     />
                   ))}
                 </div>
@@ -324,6 +349,17 @@ export default function Settings() {
         onClose={closeRepairDialog}
         onConfirm={() => repairMutation.mutate(officeState.repair.targets)}
       />
+      <ConfirmDialog
+        open={Boolean(uninstallTarget)}
+        onClose={() => setUninstallTarget(null)}
+        onConfirm={() => {
+          if (uninstallTarget) removeMutation.mutate([uninstallTarget])
+        }}
+        title={`卸载 ${HOST_DETAILS[uninstallTarget]?.title || ''} 插件？`}
+        description="这只会移除该应用的本地 Gateway 配置，不会卸载官方 Marketplace 加载项。"
+        confirmLabel={removeMutation.isPending ? '正在卸载' : '卸载插件'}
+        pending={removeMutation.isPending}
+      />
     </div>
   )
 }
@@ -358,7 +394,7 @@ function Readiness({ label, ready, detail }) {
   )
 }
 
-function HostRow({ meta, host = {}, install = {}, onInstall }) {
+function HostRow({ meta, host = {}, install = {}, uninstall = {}, manage = {}, busy = false, onInstall, onUninstall, onManage }) {
   const status = STATUS_COPY[host.state] || STATUS_COPY.unavailable
   return (
     <div className="grid min-h-11 grid-cols-[96px_minmax(0,1fr)_max-content_auto] items-center gap-3 px-3 text-xs hover:bg-[var(--surface-hover)]">
@@ -370,18 +406,44 @@ function HostRow({ meta, host = {}, install = {}, onInstall }) {
         {host.application_installed ? (host.executable_path || meta.process) : '未检测到桌面应用'}
       </span>
       <StatusBadge tone={status.tone} className="min-w-max whitespace-nowrap">{status.label}</StatusBadge>
-      {install.visible ? (
-        <button
-          type="button"
-          onClick={onInstall}
-          disabled={install.disabled}
-          title={install.label}
-          className="desktop-link inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
-        >
-          {install.disabled ? <Spinner className="h-3 w-3" /> : <ExternalLink size={12} />}
-          <span>{install.label}</span>
-        </button>
-      ) : <span aria-hidden="true" />}
+      <div className="flex items-center justify-end gap-1.5">
+        {install.visible ? (
+          <button
+            type="button"
+            onClick={onInstall}
+            disabled={install.disabled}
+            title={install.label}
+            className="desktop-link inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
+          >
+            {install.disabled ? <Spinner className="h-3 w-3" /> : <ExternalLink size={12} />}
+            <span>{install.label}</span>
+          </button>
+        ) : null}
+        {manage.visible ? (
+          <button
+            type="button"
+            onClick={onManage}
+            disabled={manage.disabled || busy}
+            title={manage.label}
+            className="desktop-link inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
+          >
+            <Settings2 size={12} />
+            <span>{manage.label}</span>
+          </button>
+        ) : null}
+        {uninstall.visible ? (
+          <button
+            type="button"
+            onClick={onUninstall}
+            disabled={uninstall.disabled || busy}
+            title={uninstall.label}
+            className="desktop-link inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-red-700 decoration-red-300 hover:bg-red-50 hover:text-red-800"
+          >
+            <Trash2 size={12} />
+            <span>{uninstall.label}</span>
+          </button>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -394,9 +456,16 @@ function OfficeNotice({ notice }) {
   if (notice.type === 'store-timeout') {
     return <InlineNotice tone="warning" className="mt-3">暂未检测到 {HOST_DETAILS[notice.app]?.title || notice.app} 安装完成，请刷新状态或重新打开 Marketplace。</InlineNotice>
   }
+  if (notice.type === 'manage-opened') {
+    return <InlineNotice className="mt-3">已打开 {HOST_DETAILS[notice.app]?.title || notice.app} 的官方 Marketplace 页面。若要卸载，请在对应 Office 应用的“我的加载项”中移除 Claude。</InlineNotice>
+  }
   const repairedApps = (notice.apps || []).map((key) => HOST_DETAILS[key]?.title).filter(Boolean)
   const action = notice.type === 'removed'
     ? '已恢复官方插件。'
+    : notice.type === 'uninstalled'
+      ? repairedApps.length
+        ? `${repairedApps.join('、')} 的 Gateway 插件已卸载。`
+        : '未发现可卸载的 Gateway 插件。'
     : notice.type === 'repaired'
       ? repairedApps.length
         ? `已清除 ${repairedApps.join('、')} 的冲突注册并完成配置。`

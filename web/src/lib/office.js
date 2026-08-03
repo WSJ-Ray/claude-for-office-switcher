@@ -60,6 +60,23 @@ export function getOfficeUiState(status = {}, pendingInstallApps = []) {
         label: host.pending_install ? '等待安装' : '从 Microsoft Marketplace 安装',
       }]
     })),
+    uninstall: Object.fromEntries(OFFICE_APP_KEYS.map((key) => {
+      const host = hosts[key]
+      return [key, {
+        visible: Boolean(host.managed_installed),
+        disabled: !status.local_access || host.pending_install,
+        label: '卸载插件',
+      }]
+    })),
+    manage: Object.fromEntries(OFFICE_APP_KEYS.map((key) => {
+      const host = hosts[key]
+      return [key, {
+        visible: Boolean(host.official_installed),
+        disabled: !host.marketplace_url || host.pending_install,
+        url: host.marketplace_url || '',
+        label: '管理官方插件',
+      }]
+    })),
     setup: {
       disabled: Boolean(setupReason),
       reason: setupReason,

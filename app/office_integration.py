@@ -1377,16 +1377,23 @@ class OfficeIntegration:
         setup_result["repaired_apps"] = [spec.key for spec in deleted_specs]
         return setup_result
 
-    def remove(self) -> dict[str, Any]:
-        """在共享互斥锁内移除受管 Office 加载项。"""
+    def remove(
+        self,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """在共享互斥锁内移除选定的受管 Office 加载项。"""
         with self._mutation_lock:
-            return self._remove_locked()
+            return self._remove_locked(app_keys)
 
-    def _remove_locked(self) -> dict[str, Any]:
+    def _remove_locked(
+        self,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """删除自身持有的注册值和清单，失败时恢复操作前快照。"""
+        specs = self._select_specs(app_keys)
         registry_before = {}
         files_before = {}
-        for spec in _APP_SPECS:
+        for spec in specs:
             if self._is_windows():
                 registry_before[spec.key] = self._registry_query(
                     _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
@@ -1406,7 +1413,7 @@ class OfficeIntegration:
             # Recheck every potentially-owned value before any mutation. This
             # avoids deleting a file after another in-process operation changed
             # its developer override between snapshot and removal.
-            for spec in _APP_SPECS:
+            for spec in specs:
                 previous = registry_before[spec.key]
                 if previous is not _MISSING and not self._same_path(
                     previous, self.manifest_paths[spec.key]
@@ -1430,6 +1437,7 @@ class OfficeIntegration:
         blocked_files: set[str] = set()
         attempted_files: list[_AppSpec] = []
         expected_files: dict[str, Any] = {}
+        changed_specs: set[str] = set()
         try:
             for spec in registry_to_remove:
                 current = self._registry_query(
@@ -1448,6 +1456,7 @@ class OfficeIntegration:
                     _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
                 )
                 changed = True
+                changed_specs.add(spec.key)
                 verified = self._registry_query(
                     _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
                 )
@@ -1470,6 +1479,7 @@ class OfficeIntegration:
                 expected_files[spec.key] = _MISSING
                 self.manifest_paths[spec.key].unlink()
                 changed = True
+                changed_specs.add(spec.key)
             try:
                 self.output_dir.rmdir()
             except OSError:
@@ -1493,7 +1503,10 @@ class OfficeIntegration:
 
         return {
             "changed": changed,
-            "restart_required": current_status["office"]["running"],
+            "removed_apps": [spec.key for spec in specs if spec.key in changed_specs],
+            "restart_required": any(
+                current_status["apps"][spec.key]["running"] for spec in specs
+            ),
             "status": current_status,
         }
 

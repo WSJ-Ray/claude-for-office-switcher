@@ -140,14 +140,16 @@ def repair_office_conflicts(request: Request, payload: OfficeAppsIn | None = Non
 
 
 @router.delete("/admin/office/setup")
-def remove_office(request: Request):
-    """移除本机受管 Office 加载项注册和清单。"""
+def remove_office(request: Request, payload: OfficeAppsIn | None = None):
+    """移除本机选定的受管 Office 加载项注册和清单。"""
     verify_admin_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
 
     try:
-        return get_office_integration().remove()
+        if payload is None or payload.apps is None:
+            return get_office_integration().remove()
+        return get_office_integration().remove(payload.apps)
     except Exception as error:
         _raise_office_error(error)
 

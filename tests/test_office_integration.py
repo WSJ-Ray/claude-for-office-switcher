@@ -358,6 +358,35 @@ class OfficeIntegrationTests(unittest.TestCase):
                     self.make_service()._select_specs(app_keys)
                 self.assertEqual(context.exception.code, "invalid_app_selection")
 
+    def test_selective_remove_only_removes_requested_application(self):
+        self.install_office()
+        self.write_templates()
+        service = self.make_service()
+        service.setup("bootstrap-secret")
+
+        result = service.remove(["word"])
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["removed_apps"], ["word"])
+        self.assertFalse(
+            (self.data_dir / "office_addins" / "claude-word.xml").exists()
+        )
+        self.assertNotIn(
+            ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID),
+            self.registry.values,
+        )
+        for app_key, manifest_id in (
+            ("powerpoint", POWERPOINT_MANIFEST_ID),
+            ("excel", EXCEL_MANIFEST_ID),
+        ):
+            self.assertTrue(
+                (self.data_dir / "office_addins" / f"claude-{app_key}.xml").is_file()
+            )
+            self.assertIn(
+                ("HKCU", DEVELOPER_REGISTRY_PATH, manifest_id),
+                self.registry.values,
+            )
+
     def test_gateway_url_defaults_allows_loopback_and_requires_https_remotely(self):
         no_port_service = self.make_service(env={})
         self.assertEqual(no_port_service.gateway_url, "http://127.0.0.1:4000")

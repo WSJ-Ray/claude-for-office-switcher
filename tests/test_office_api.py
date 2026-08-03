@@ -317,6 +317,29 @@ class OfficeApiTests(unittest.TestCase):
         )
         self.service.remove.assert_called_once_with()
 
+    def test_remove_accepts_a_selective_application_list(self):
+        response = self.client.request(
+            "DELETE",
+            "/admin/office/setup",
+            json={"apps": ["excel"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.service.remove.assert_called_once_with(["excel"])
+
+    def test_remove_rejects_empty_or_duplicate_application_lists(self):
+        for apps in ([], ["word", "word"], ["outlook"]):
+            with self.subTest(apps=apps):
+                self.service.remove.reset_mock()
+                response = self.client.request(
+                    "DELETE",
+                    "/admin/office/setup",
+                    json={"apps": apps},
+                )
+
+                self.assertEqual(response.status_code, 422)
+                self.service.remove.assert_not_called()
+
     def test_domain_errors_map_to_stable_conflict_and_server_details(self):
         cases = (
             (

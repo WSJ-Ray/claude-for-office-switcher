@@ -1,4 +1,4 @@
-# LLM Office Gateway
+# Claude for Office Switcher
 
 多供应商 LLM 网关，让 Claude Office 插件（Excel/Word/PowerPoint/Outlook）接入多种大语言模型供应商，包括 DeepSeek、Moonshot、OpenAI 兼容接口等。
 
@@ -50,8 +50,8 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/DearMJZ-2U/deepseek-office-gateway.git
-cd deepseek-office-gateway
+git clone https://github.com/WSJ-Ray/claude-for-office-switcher.git
+cd claude-for-office-switcher
 ```
 
 ### 2. 本机启动
@@ -103,6 +103,8 @@ cd web && npm run build
 | API Token | 在配置界面设置的值|
 
 连接成功后即可使用。安装官方 Marketplace 加载项和连接本地 Gateway 是两个连续步骤；Marketplace 会要求用户确认，网页不能静默完成安装。
+
+已安装官方加载项的应用行会显示“管理官方插件”，点击后打开该加载项的官方 Marketplace 页面；若要真正卸载，请在对应 Office 应用的“我的加载项”管理界面中移除 Claude。若需要停用某个应用的本地 Gateway 配置，可点击“卸载插件”并确认。该按钮只移除所选应用的 Gateway Developer 注册和本地清单，不影响其他 Office 应用，也不会卸载官方 Marketplace 加载项。
 
 #### 修复 Developer 注册冲突
 

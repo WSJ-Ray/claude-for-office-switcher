@@ -49,5 +49,8 @@ export const repairOfficeConflicts = (apps) => api('/admin/office/conflicts/repa
   method: 'POST',
   body: JSON.stringify(apps?.length ? { apps } : {}),
 })
-/** 移除本机受管 Office 集成。 */
-export const removeOffice = () => api('/admin/office/setup', { method: 'DELETE' })
+/** 移除本机选定的受管 Office 集成；不传应用时保持全量移除兼容。 */
+export const removeOffice = (apps) => api('/admin/office/setup', {
+  method: 'DELETE',
+  body: JSON.stringify(apps?.length ? { apps } : {}),
+})
