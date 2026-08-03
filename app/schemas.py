@@ -1,7 +1,22 @@
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from .providers import is_supported_provider_format, supported_provider_formats
+
+
+class OfficeAppsIn(BaseModel):
+    """Optional target list for selective Office integration actions."""
+
+    apps: list[Literal["word", "powerpoint", "excel"]] | None = None
+
+    @field_validator("apps")
+    @classmethod
+    def validate_apps(cls, value):
+        if value is None:
+            return value
+        if not value or len(set(value)) != len(value):
+            raise ValueError("apps must contain one or more unique Office applications")
+        return value
 
 
 class ProviderFormatModel(BaseModel):

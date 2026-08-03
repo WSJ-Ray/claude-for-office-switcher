@@ -26,3 +26,19 @@ export const subscribeToDesktopRuntime = (onReady, targetWindow = getBrowserWind
 
   return () => targetWindow.removeEventListener?.(PYWEBVIEW_READY_EVENT, handleReady)
 }
+
+export const openExternalUrl = async (url, targetWindow = getBrowserWindow()) => {
+  if (!targetWindow || typeof url !== 'string') return false
+
+  const nativeOpen = targetWindow.pywebview?.api?.open_external_url
+  if (typeof nativeOpen === 'function') {
+    try {
+      if (await nativeOpen(url)) return true
+    } catch {
+      // Fall back to the browser opener when the native bridge is unavailable.
+    }
+  }
+
+  if (typeof targetWindow.open !== 'function') return false
+  return Boolean(targetWindow.open(url, '_blank', 'noopener,noreferrer'))
+}

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
   CircleAlert,
   Download,
+  ExternalLink,
   KeyRound,
   RefreshCw,
   RotateCcw,
@@ -29,6 +30,7 @@ import {
   updateSettings
 } from '../lib/api'
 import { getOfficeUiState } from '../lib/office'
+import { openExternalUrl } from '../lib/runtime'
 
 const HOST_DETAILS = {
   word: { title: 'Word', process: 'WINWORD.EXE' },
@@ -39,6 +41,7 @@ const HOST_DETAILS = {
 const STATUS_COPY = {
   conflict: { label: '注册冲突', tone: 'danger' },
   managed: { label: '已托管', tone: 'success' },
+  pending: { label: '等待安装', tone: 'warning' },
   official: { label: '官方插件已检测', tone: 'info' },
   available: { label: '可配置', tone: 'neutral' },
   unavailable: { label: '未检测到', tone: 'neutral' }
@@ -52,15 +55,27 @@ export default function Settings() {
   const [tokenError, setTokenError] = useState(null)
   const [officeNotice, setOfficeNotice] = useState(null)
   const [repairOpen, setRepairOpen] = useState(false)
+  const [pendingInstallApps, setPendingInstallApps] = useState([])
+  const installTimers = useRef(new Map())
+  const autoSetupStarted = useRef(new Set())
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: getSettings })
-  const officeQuery = useQuery({ queryKey: ['office-status'], queryFn: getOfficeStatus })
+  const officeQuery = useQuery({
+    queryKey: ['office-status'],
+    queryFn: getOfficeStatus,
+    refetchInterval: pendingInstallApps.length ? 2500 : false,
+  })
 
   useEffect(() => {
     if (!saved) return undefined
     const timer = window.setTimeout(() => setSaved(false), 3000)
     return () => window.clearTimeout(timer)
   }, [saved])
+
+  useEffect(() => () => {
+    installTimers.current.forEach((timer) => window.clearTimeout(timer))
+    installTimers.current.clear()
+  }, [])
 
   const refreshOffice = async () => {
     await queryClient.invalidateQueries({ queryKey: ['office-status'] })
@@ -82,7 +97,11 @@ export default function Settings() {
     mutationFn: setupOffice,
     onSuccess: async (result) => {
       await refreshOffice()
-      setOfficeNotice({ type: 'success', restart: result.restart_required })
+      setOfficeNotice({
+        type: 'success',
+        apps: result.configured_apps || [],
+        restart: result.restart_required,
+      })
     },
     onError: (error) => setOfficeNotice({ type: 'error', message: error.message })
   })
@@ -111,8 +130,26 @@ export default function Settings() {
     }
   })
 
+  useEffect(() => {
+    const completed = pendingInstallApps.filter((key) => (
+      officeQuery.data?.apps?.[key]?.official_installed
+      && !autoSetupStarted.current.has(key)
+    ))
+    if (!completed.length || setupMutation.isPending) return
+
+    completed.forEach((key) => {
+      autoSetupStarted.current.add(key)
+      const timer = installTimers.current.get(key)
+      if (timer) window.clearTimeout(timer)
+      installTimers.current.delete(key)
+    })
+    setPendingInstallApps((current) => current.filter((key) => !completed.includes(key)))
+    setOfficeNotice(null)
+    setupMutation.mutate(completed)
+  }, [officeQuery.data, pendingInstallApps, setupMutation.isPending, setupMutation.mutate])
+
   const configured = settingsQuery.data?.has_token ?? false
-  const officeState = getOfficeUiState(officeQuery.data)
+  const officeState = getOfficeUiState(officeQuery.data, pendingInstallApps)
   const busy = setupMutation.isPending || removeMutation.isPending || repairMutation.isPending
 
   const closeRepairDialog = useCallback(() => {
@@ -122,6 +159,29 @@ export default function Settings() {
   const handleSave = () => {
     const next = token.trim()
     if (next) saveMutation.mutate({ gateway_token: next })
+  }
+
+  const handleMarketplaceInstall = async (key, url) => {
+    if (!url) return
+    autoSetupStarted.current.delete(key)
+    setPendingInstallApps((current) => (current.includes(key) ? current : [...current, key]))
+    const previousTimer = installTimers.current.get(key)
+    if (previousTimer) window.clearTimeout(previousTimer)
+
+    const opened = await openExternalUrl(url)
+    if (!opened) {
+      setPendingInstallApps((current) => current.filter((item) => item !== key))
+      setOfficeNotice({ type: 'error', message: '无法打开 Microsoft Marketplace 页面。' })
+      return
+    }
+
+    setOfficeNotice({ type: 'store-opened', app: key })
+    const timer = window.setTimeout(() => {
+      setPendingInstallApps((current) => current.filter((item) => item !== key))
+      installTimers.current.delete(key)
+      setOfficeNotice({ type: 'store-timeout', app: key })
+    }, 90000)
+    installTimers.current.set(key, timer)
   }
 
   return (
@@ -186,13 +246,22 @@ export default function Settings() {
               </div>
 
               <div className="mt-3 overflow-hidden rounded border border-[var(--border)]">
-                <div className="grid h-8 grid-cols-[130px_minmax(0,1fr)_100px] items-center gap-3 border-b border-[var(--border)] bg-[var(--surface-subtle)] px-3 text-[10px] font-semibold text-[var(--text-muted)]">
+                <div className="grid h-8 grid-cols-[96px_minmax(0,1fr)_max-content_auto] items-center gap-3 border-b border-[var(--border)] bg-[var(--surface-subtle)] px-3 text-[10px] font-semibold text-[var(--text-muted)]">
                   <span>应用</span>
                   <span>安装位置</span>
                   <span>状态</span>
+                  <span aria-hidden="true" />
                 </div>
                 <div className="divide-y divide-[var(--border-subtle)]">
-                  {Object.entries(HOST_DETAILS).map(([key, meta]) => <HostRow key={key} meta={meta} host={officeState.hosts[key]} />)}
+                  {Object.entries(HOST_DETAILS).map(([key, meta]) => (
+                    <HostRow
+                      key={key}
+                      meta={meta}
+                      host={officeState.hosts[key]}
+                      install={officeState.install[key]}
+                      onInstall={() => handleMarketplaceInstall(key, officeState.install[key]?.url)}
+                    />
+                  ))}
                 </div>
               </div>
 
@@ -221,7 +290,7 @@ export default function Settings() {
                     type="button"
                     onClick={() => {
                       setOfficeNotice(null)
-                      setupMutation.mutate()
+                      setupMutation.mutate(officeState.setup.targets)
                     }}
                     disabled={officeState.setup.disabled || busy}
                     className="desktop-button desktop-button-primary"
@@ -253,7 +322,7 @@ export default function Settings() {
         conflicts={officeState.conflicts}
         pending={repairMutation.isPending}
         onClose={closeRepairDialog}
-        onConfirm={() => repairMutation.mutate()}
+        onConfirm={() => repairMutation.mutate(officeState.repair.targets)}
       />
     </div>
   )
@@ -289,10 +358,10 @@ function Readiness({ label, ready, detail }) {
   )
 }
 
-function HostRow({ meta, host = {} }) {
+function HostRow({ meta, host = {}, install = {}, onInstall }) {
   const status = STATUS_COPY[host.state] || STATUS_COPY.unavailable
   return (
-    <div className="grid min-h-11 grid-cols-[130px_minmax(0,1fr)_100px] items-center gap-3 px-3 text-xs hover:bg-[var(--surface-hover)]">
+    <div className="grid min-h-11 grid-cols-[96px_minmax(0,1fr)_max-content_auto] items-center gap-3 px-3 text-xs hover:bg-[var(--surface-hover)]">
       <div className="min-w-0">
         <span className="font-semibold text-[var(--text-primary)]">{meta.title}</span>
         {host.running ? <span className="ml-2 text-[10px] text-[var(--warning-strong)]">运行中</span> : null}
@@ -300,13 +369,31 @@ function HostRow({ meta, host = {} }) {
       <span className="truncate font-mono text-[10px] text-[var(--text-muted)]" title={host.executable_path || meta.process}>
         {host.application_installed ? (host.executable_path || meta.process) : '未检测到桌面应用'}
       </span>
-      <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
+      <StatusBadge tone={status.tone} className="min-w-max whitespace-nowrap">{status.label}</StatusBadge>
+      {install.visible ? (
+        <button
+          type="button"
+          onClick={onInstall}
+          disabled={install.disabled}
+          title={install.label}
+          className="desktop-link inline-flex items-center gap-1 whitespace-nowrap text-[11px]"
+        >
+          {install.disabled ? <Spinner className="h-3 w-3" /> : <ExternalLink size={12} />}
+          <span>{install.label}</span>
+        </button>
+      ) : <span aria-hidden="true" />}
     </div>
   )
 }
 
 function OfficeNotice({ notice }) {
   if (notice.type === 'error') return <InlineNotice tone="danger" className="mt-3">{notice.message}</InlineNotice>
+  if (notice.type === 'store-opened') {
+    return <InlineNotice className="mt-3">已打开 {HOST_DETAILS[notice.app]?.title || notice.app} 的 Microsoft Marketplace 页面。完成安装后返回此窗口，系统会自动连接 Gateway。</InlineNotice>
+  }
+  if (notice.type === 'store-timeout') {
+    return <InlineNotice tone="warning" className="mt-3">暂未检测到 {HOST_DETAILS[notice.app]?.title || notice.app} 安装完成，请刷新状态或重新打开 Marketplace。</InlineNotice>
+  }
   const repairedApps = (notice.apps || []).map((key) => HOST_DETAILS[key]?.title).filter(Boolean)
   const action = notice.type === 'removed'
     ? '已恢复官方插件。'
@@ -314,7 +401,9 @@ function OfficeNotice({ notice }) {
       ? repairedApps.length
         ? `已清除 ${repairedApps.join('、')} 的冲突注册并完成配置。`
         : '未发现需要清除的冲突，Claude for Office 已配置。'
-      : 'Claude for Office 已配置。'
+      : repairedApps.length
+        ? `${repairedApps.join('、')} 已连接 Gateway。`
+        : 'Claude for Office 已配置。'
   return <InlineNotice tone="success" className="mt-3">{action}{notice.restart ? ' 请关闭并重新打开 Office 应用。' : ''}</InlineNotice>
 }
 

@@ -85,20 +85,30 @@ cd web && npm run build
 
 ### 3. 配置 Office 插件
 
-打开 Excel/Word/PowerPoint/Outlook，找到 Claude 插件，选择 **Enterprise gateway** 登录：
+启动网关后，打开管理面板的“系统设置”→“Claude for Office”。Word、PowerPoint 和 Excel 会分别显示官方 Microsoft Marketplace 安装入口：
+
+- [Claude by Anthropic for Word](https://marketplace.microsoft.com/en-us/product/office/WA200010453)
+- [Claude by Anthropic for PowerPoint](https://marketplace.microsoft.com/en-us/product/office/WA200010001)
+- [Claude by Anthropic for Excel](https://marketplace.microsoft.com/en-us/product/office/WA200009404)
+
+这些是 Office Marketplace 加载项页面，不是 Windows Store EXE 下载。点击对应入口后，仍需在微软页面登录并确认安装。Claude for Office 还需要符合 Anthropic 官方的订阅或组织授权条件。
+
+返回管理面板后，网关会自动检测官方加载项，并仅为刚安装的应用写入本机 Gateway 配置。如果 Office 应用正在运行，关闭并重新打开对应的 Word、PowerPoint 或 Excel 后配置才会生效。
+
+手动连接时，Office 客户端使用以下配置：
 
 | 配置项 | 值 |
 |--------|-----|
 | Gateway URL | `http://127.0.0.1:4000` |
 | API Token | 在配置界面设置的值|
 
-连接成功后即可使用。
+连接成功后即可使用。安装官方 Marketplace 加载项和连接本地 Gateway 是两个连续步骤；Marketplace 会要求用户确认，网页不能静默完成安装。
 
 #### 修复 Developer 注册冲突
 
-如果管理面板在“系统设置”中提示 Word、PowerPoint 或 Excel 存在 Developer 注册冲突，可使用“修复冲突并配置”。确认后，网关会一次清除列出的外部 Developer 注册并安装 Gateway 加载项；官方商店安装不受影响。
+如果管理面板在“系统设置”中提示 Word、PowerPoint 或 Excel 存在 Developer 注册冲突，可使用“修复冲突并配置”。确认后，网关只清除列出的外部 Developer 注册并为目标应用安装 Gateway 配置；官方 Marketplace 加载项不会被删除。
 
-> **注意**：被清除的外部 Developer 注册不会保留，“恢复官方插件”也不会还原这些注册。请仅在确认不再需要原开发者加载项时执行修复。
+> **注意**：被清除的外部 Developer 注册不会保留，“恢复官方插件”也不会还原这些注册。请仅在确认不再需要原开发者加载项时执行修复。远程访问管理面板不能修改本机 Office 注册表，安装和配置操作必须从本机管理页面执行。
 
 ## 支持的供应商
 

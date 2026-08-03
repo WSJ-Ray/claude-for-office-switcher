@@ -18,7 +18,8 @@ test('enables initial setup when the local Windows gateway and Office are ready'
   const state = getOfficeUiState(readyStatus)
 
   assert.equal(state.setup.disabled, false)
-  assert.equal(state.setup.label, '一键安装并配置')
+  assert.equal(state.setup.label, '连接 Gateway')
+  assert.deepEqual(state.setup.targets, ['word'])
   assert.equal(state.repair.visible, false)
   assert.equal(state.remove.disabled, true)
   assert.equal(state.hosts.word.state, 'official')
@@ -97,6 +98,51 @@ test('reports the official Claude Excel add-in independently of the gateway add-
 
   assert.equal(state.hosts.excel.state, 'official')
   assert.equal(state.setup.disabled, false)
+})
+
+test('exposes Marketplace install actions for uninstalled hosts', () => {
+  const state = getOfficeUiState({
+    ...readyStatus,
+    apps: {
+      ...readyStatus.apps,
+      powerpoint: {
+        ...readyStatus.apps.powerpoint,
+        marketplace_url: 'https://marketplace.microsoft.com/en-us/product/office/WA200010001',
+      },
+    },
+  })
+
+  assert.equal(state.install.word.visible, false)
+  assert.equal(state.install.powerpoint.visible, true)
+  assert.equal(state.install.powerpoint.disabled, false)
+  assert.equal(state.install.powerpoint.url, 'https://marketplace.microsoft.com/en-us/product/office/WA200010001')
+  assert.match(state.setup.reason, /^$/)
+})
+
+test('marks a Marketplace install as pending while polling', () => {
+  const state = getOfficeUiState(readyStatus, ['powerpoint'])
+
+  assert.equal(state.hosts.powerpoint.state, 'pending')
+  assert.equal(state.hosts.powerpoint.pending_install, true)
+  assert.equal(state.install.powerpoint.disabled, true)
+  assert.equal(state.install.powerpoint.label, '等待安装')
+})
+
+test('requires an official add-in before exposing Gateway setup targets', () => {
+  const status = {
+    ...readyStatus,
+    apps: Object.fromEntries(
+      Object.entries(readyStatus.apps).map(([key, host]) => [
+        key,
+        { ...host, official_installed: false, managed_installed: false },
+      ]),
+    ),
+  }
+  const state = getOfficeUiState(status)
+
+  assert.equal(state.setup.disabled, true)
+  assert.equal(state.setup.targets.length, 0)
+  assert.match(state.setup.reason, /Marketplace/)
 })
 
 test('extracts a user-facing message from structured API errors', () => {

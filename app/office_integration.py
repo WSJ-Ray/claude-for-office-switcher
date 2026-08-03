@@ -57,6 +57,7 @@ _ERROR_MESSAGES = {
     "unsupported_platform": "Office integration is only supported on Windows.",
     "office_not_found": "Microsoft Office Click-to-Run was not detected.",
     "invalid_bootstrap_secret": "A bootstrap secret is required.",
+    "invalid_app_selection": "One or more Office applications are invalid.",
     "developer_override_conflict": "An external Office developer override already exists.",
     "manifest_template_missing": "An Office manifest template is missing.",
     "manifest_template_invalid": "An Office manifest template is invalid.",
@@ -107,6 +108,14 @@ class _AppSpec:
     template_name: str
     output_name: str
 
+    @property
+    def marketplace_url(self) -> str:
+        """Return the official Microsoft Marketplace page for this add-in."""
+        return (
+            "https://marketplace.microsoft.com/en-us/product/office/"
+            f"{self.store_id.upper()}"
+        )
+
 
 _APP_SPECS = (
     _AppSpec(
@@ -137,6 +146,8 @@ _APP_SPECS = (
         output_name="claude-excel.xml",
     ),
 )
+
+_APP_SPEC_BY_KEY = {spec.key: spec for spec in _APP_SPECS}
 
 
 class WinRegistryAdapter:
@@ -386,6 +397,20 @@ class OfficeIntegration:
     def _is_windows(self) -> bool:
         """判断当前注入的平台标识是否表示 Windows。"""
         return str(self.platform).lower() in {"win32", "windows"}
+
+    @staticmethod
+    def _select_specs(app_keys: list[str] | tuple[str, ...] | None) -> list[_AppSpec]:
+        """Resolve an optional application selection in stable display order."""
+        if app_keys is None:
+            return list(_APP_SPECS)
+        if not isinstance(app_keys, (list, tuple)) or not app_keys:
+            raise OfficeIntegrationError("invalid_app_selection")
+        if any(not isinstance(key, str) for key in app_keys):
+            raise OfficeIntegrationError("invalid_app_selection")
+        selected = set(app_keys)
+        if len(selected) != len(app_keys) or not selected.issubset(_APP_SPEC_BY_KEY):
+            raise OfficeIntegrationError("invalid_app_selection")
+        return [spec for spec in _APP_SPECS if spec.key in selected]
 
     def _registry(self):
         """延迟创建并返回注册表适配器。"""
@@ -723,6 +748,7 @@ class OfficeIntegration:
             app_status = {
                 "name": spec.display_name,
                 "store_id": spec.store_id,
+                "marketplace_url": spec.marketplace_url,
                 "manifest_id": spec.manifest_id,
                 "manifest_path": str(manifest_path),
                 "executable_path": executable_path,
@@ -1010,10 +1036,14 @@ class OfficeIntegration:
                     restored = False
         return restored
 
-    def setup(self, secret: str) -> dict[str, Any]:
+    def setup(
+        self,
+        secret: str,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """在共享互斥锁内安装或刷新受管 Office 加载项。"""
         with self._mutation_lock:
-            return self._setup_locked(secret)
+            return self._setup_locked(secret, app_keys)
 
     def _validate_setup_preconditions(
         self, secret: str
@@ -1040,13 +1070,18 @@ class OfficeIntegration:
         )
         return before_status, bootstrap_url
 
-    def _setup_locked(self, secret: str) -> dict[str, Any]:
+    def _setup_locked(
+        self,
+        secret: str,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """写入受管清单和注册值，失败时恢复操作前快照。"""
         before_status, bootstrap_url = self._validate_setup_preconditions(secret)
+        specs = self._select_specs(app_keys)
 
         registry_before = {}
         files_before = {}
-        for spec in _APP_SPECS:
+        for spec in specs:
             manifest_path = self.manifest_paths[spec.key]
             registered = self._registry_query(
                 _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
@@ -1066,18 +1101,18 @@ class OfficeIntegration:
 
         rendered = {
             spec.key: self._render_manifest(spec, bootstrap_url)
-            for spec in _APP_SPECS
+            for spec in specs
         }
 
         files_to_write = [
             spec
-            for spec in _APP_SPECS
+            for spec in specs
             if files_before[spec.key] is _MISSING
             or files_before[spec.key] != rendered[spec.key]
         ]
         registry_to_write = [
             spec
-            for spec in _APP_SPECS
+            for spec in specs
             if registry_before[spec.key] is _MISSING
             or not self._same_path(
                 registry_before[spec.key], self.manifest_paths[spec.key]
@@ -1101,7 +1136,7 @@ class OfficeIntegration:
             # before and after each write, then using conditional compensation,
             # is the strongest boundary available without overwriting external
             # developer overrides.
-            for spec in _APP_SPECS:
+            for spec in specs:
                 expected_path = self.manifest_paths[spec.key]
                 current = self._registry_query(
                     _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
@@ -1130,7 +1165,7 @@ class OfficeIntegration:
                     raise OfficeIntegrationError(
                         "developer_override_conflict"
                     )
-            for spec in _APP_SPECS:
+            for spec in specs:
                 verified = self._registry_query(
                     _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
                 )
@@ -1141,9 +1176,10 @@ class OfficeIntegration:
                         "developer_override_conflict"
                     )
             current_status = self.status()
-            if (
-                current_status["conflict"]
-                or not current_status["managed_installed"]
+            if any(
+                current_status["apps"][spec.key]["conflict"]
+                or not current_status["apps"][spec.key]["managed_installed"]
+                for spec in specs
             ):
                 raise OfficeIntegrationError(
                     "developer_override_conflict"
@@ -1166,7 +1202,10 @@ class OfficeIntegration:
 
         return {
             "changed": changed,
-            "restart_required": current_status["office"]["running"],
+            "configured_apps": [spec.key for spec in specs],
+            "restart_required": any(
+                current_status["apps"][spec.key]["running"] for spec in specs
+            ),
             "status": current_status,
         }
 
@@ -1238,22 +1277,31 @@ class OfficeIntegration:
                 restored = False
         return restored
 
-    def repair_conflicts(self, secret: str) -> dict[str, Any]:
+    def repair_conflicts(
+        self,
+        secret: str,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """在共享互斥锁内修复开发者注册冲突。"""
         with self._mutation_lock:
-            return self._repair_conflicts_locked(secret)
+            return self._repair_conflicts_locked(secret, app_keys)
 
-    def _repair_conflicts_locked(self, secret: str) -> dict[str, Any]:
+    def _repair_conflicts_locked(
+        self,
+        secret: str,
+        app_keys: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """预校验清单后移除冲突值并安装受管项，失败时补偿恢复。"""
         _, bootstrap_url = self._validate_setup_preconditions(secret)
+        specs = self._select_specs(app_keys)
 
         # Validate every template before removing an external registration.
-        for spec in _APP_SPECS:
+        for spec in specs:
             self._render_manifest(spec, bootstrap_url)
 
         registry_before: dict[str, Any] = {}
         conflicts: list[_AppSpec] = []
-        for spec in _APP_SPECS:
+        for spec in specs:
             current = self._registry_query(
                 _HKCU, DEVELOPER_REGISTRY_PATH, spec.manifest_id
             )
@@ -1264,7 +1312,7 @@ class OfficeIntegration:
                 conflicts.append(spec)
 
         if not conflicts:
-            result = dict(self._setup_locked(secret))
+            result = dict(self._setup_locked(secret, app_keys))
             result["repaired_apps"] = []
             return result
 
@@ -1312,7 +1360,7 @@ class OfficeIntegration:
                     raise OfficeIntegrationError("repair_failed")
                 deleted_specs.append(spec)
 
-            setup_result = dict(self._setup_locked(secret))
+            setup_result = dict(self._setup_locked(secret, app_keys))
         except Exception as exc:
             registry_restored = self._restore_repaired_registry_values(
                 registry_before, attempted_deletions

@@ -4,8 +4,10 @@ import os
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 from typing import Callable, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image, ImageDraw
@@ -37,6 +39,27 @@ DWMSBT_NONE = 1
 WINDOW_WIDTH = 1296
 WINDOW_HEIGHT = 880
 WINDOW_MIN_SIZE = (976, 680)
+
+
+class DesktopBridge:
+    """Expose narrowly scoped native actions to the local WebView UI."""
+
+    @staticmethod
+    def open_external_url(url: str) -> bool:
+        """Open only Microsoft Marketplace HTTPS pages in the system browser."""
+        try:
+            parsed = urlsplit(url)
+        except (TypeError, ValueError):
+            return False
+        if (
+            parsed.scheme.lower() != "https"
+            or parsed.hostname != "marketplace.microsoft.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+        ):
+            return False
+        return bool(webbrowser.open(url, new=2))
 
 
 class _Rect(ctypes.Structure):
@@ -491,6 +514,7 @@ class DesktopGatewayApp:
                 height=height,
                 resizable=True,
                 min_size=WINDOW_MIN_SIZE,
+                js_api=DesktopBridge(),
                 frameless=False,
                 easy_drag=False,
                 shadow=True,

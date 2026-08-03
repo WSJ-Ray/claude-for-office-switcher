@@ -254,6 +254,34 @@ class OfficeApiTests(unittest.TestCase):
         self.assertTrue(secret)
         self.service.setup.assert_called_once_with(secret)
 
+    def test_setup_accepts_a_selective_application_list(self):
+        self._set_gateway_token()
+
+        response = self.client.post(
+            "/admin/office/setup",
+            json={"apps": ["word", "excel"]},
+            headers=AUTH_HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        self.service.setup.assert_called_once_with(secret, ["word", "excel"])
+
+    def test_setup_rejects_empty_or_unknown_application_lists(self):
+        self._set_gateway_token()
+
+        for apps in ([], ["outlook"], ["word", "word"]):
+            with self.subTest(apps=apps):
+                self.service.setup.reset_mock()
+                response = self.client.post(
+                    "/admin/office/setup",
+                    json={"apps": apps},
+                    headers=AUTH_HEADERS,
+                )
+
+                self.assertEqual(response.status_code, 422)
+                self.service.setup.assert_not_called()
+
     def test_repair_creates_secret_and_returns_service_result(self):
         self._set_gateway_token()
 
@@ -266,6 +294,19 @@ class OfficeApiTests(unittest.TestCase):
         secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
         self.assertTrue(secret)
         self.service.repair_conflicts.assert_called_once_with(secret)
+
+    def test_repair_accepts_a_selective_application_list(self):
+        self._set_gateway_token()
+
+        response = self.client.post(
+            "/admin/office/conflicts/repair",
+            json={"apps": ["excel"]},
+            headers=AUTH_HEADERS,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        self.service.repair_conflicts.assert_called_once_with(secret, ["excel"])
 
     def test_remove_returns_service_result_without_requiring_gateway_token(self):
         response = self.client.delete("/admin/office/setup")

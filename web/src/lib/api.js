@@ -39,9 +39,15 @@ export const updateSettings = (data) => api('/admin/settings', { method: 'PUT', 
 
 /** 获取本机 Office 集成状态。 */
 export const getOfficeStatus = () => api('/admin/office/status')
-/** 安装或刷新本机 Office 集成。 */
-export const setupOffice = () => api('/admin/office/setup', { method: 'POST' })
+/** 安装或刷新指定应用的本机 Office 集成。 */
+export const setupOffice = (apps) => api('/admin/office/setup', {
+  method: 'POST',
+  body: JSON.stringify(apps?.length ? { apps } : {}),
+})
 /** 修复 Office 开发者注册冲突并重新配置。 */
-export const repairOfficeConflicts = () => api('/admin/office/conflicts/repair', { method: 'POST' })
+export const repairOfficeConflicts = (apps) => api('/admin/office/conflicts/repair', {
+  method: 'POST',
+  body: JSON.stringify(apps?.length ? { apps } : {}),
+})
 /** 移除本机受管 Office 集成。 */
 export const removeOffice = () => api('/admin/office/setup', { method: 'DELETE' })

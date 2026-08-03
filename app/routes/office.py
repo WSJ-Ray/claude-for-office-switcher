@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from .. import db
 from ..auth import verify_admin_auth
 from ..office_integration import OfficeIntegration, OfficeIntegrationError
+from ..schemas import OfficeAppsIn
 
 
 router = APIRouter()
@@ -101,7 +102,7 @@ def office_status(request: Request):
 
 
 @router.post("/admin/office/setup")
-def setup_office(request: Request):
+def setup_office(request: Request, payload: OfficeAppsIn | None = None):
     """为本机 Office 安装并注册受管加载项清单。"""
     verify_admin_auth(request)
     if not _is_local_request(request):
@@ -111,13 +112,16 @@ def setup_office(request: Request):
 
     try:
         secret = db.get_or_create_office_bootstrap_secret()
-        return get_office_integration().setup(secret)
+        service = get_office_integration()
+        if payload is None or payload.apps is None:
+            return service.setup(secret)
+        return service.setup(secret, payload.apps)
     except Exception as error:
         _raise_office_error(error)
 
 
 @router.post("/admin/office/conflicts/repair")
-def repair_office_conflicts(request: Request):
+def repair_office_conflicts(request: Request, payload: OfficeAppsIn | None = None):
     """修复外部开发者注册冲突并重新安装受管加载项。"""
     verify_admin_auth(request)
     if not _is_local_request(request):
@@ -127,7 +131,10 @@ def repair_office_conflicts(request: Request):
 
     try:
         secret = db.get_or_create_office_bootstrap_secret()
-        return get_office_integration().repair_conflicts(secret)
+        service = get_office_integration()
+        if payload is None or payload.apps is None:
+            return service.repair_conflicts(secret)
+        return service.repair_conflicts(secret, payload.apps)
     except Exception as error:
         _raise_office_error(error)
 

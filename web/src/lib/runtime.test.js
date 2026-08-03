@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   isDesktopRuntime,
+  openExternalUrl,
   PYWEBVIEW_READY_EVENT,
   subscribeToDesktopRuntime,
 } from './runtime.js'
@@ -43,4 +44,44 @@ test('promotes to desktop mode when pywebviewready fires and cleans up', () => {
 
   unsubscribe()
   assert.equal(listeners.has(PYWEBVIEW_READY_EVENT), false)
+})
+
+test('opens Marketplace URLs through the desktop bridge when available', async () => {
+  const calls = []
+  const targetWindow = {
+    pywebview: {
+      api: {
+        open_external_url: async (url) => {
+          calls.push(url)
+          return true
+        },
+      },
+    },
+    open: () => {
+      throw new Error('browser fallback should not be used')
+    },
+  }
+
+  const result = await openExternalUrl(
+    'https://marketplace.microsoft.com/en-us/product/office/WA200010453',
+    targetWindow,
+  )
+
+  assert.equal(result, true)
+  assert.deepEqual(calls, ['https://marketplace.microsoft.com/en-us/product/office/WA200010453'])
+})
+
+test('falls back to a browser tab when the native bridge is unavailable', async () => {
+  const calls = []
+  const targetWindow = {
+    open: (...args) => {
+      calls.push(args)
+      return {}
+    },
+  }
+
+  const result = await openExternalUrl('https://marketplace.microsoft.com/page', targetWindow)
+
+  assert.equal(result, true)
+  assert.deepEqual(calls, [['https://marketplace.microsoft.com/page', '_blank', 'noopener,noreferrer']])
 })

@@ -1,7 +1,10 @@
 /** 将单个 Office 主机状态归一化为界面状态。 */
-const hostState = (host = {}) => {
+const OFFICE_APP_KEYS = ['word', 'powerpoint', 'excel']
+
+const hostState = (host = {}, pendingInstall = false) => {
   if (host.conflict) return 'conflict'
   if (host.managed_installed) return 'managed'
+  if (pendingInstall && !host.official_installed) return 'pending'
   if (host.official_installed) return 'official'
   if (host.application_installed) return 'available'
   return 'unavailable'
@@ -17,11 +20,16 @@ const readinessReason = (status = {}) => {
 }
 
 /** 将 Office API 状态转换为页面操作和展示所需的界面状态。 */
-export function getOfficeUiState(status = {}) {
+export function getOfficeUiState(status = {}, pendingInstallApps = []) {
+  const pendingSet = new Set(pendingInstallApps)
   const hosts = Object.fromEntries(
-    ['word', 'powerpoint', 'excel'].map((key) => [
+    OFFICE_APP_KEYS.map((key) => [
       key,
-      { ...status.apps?.[key], state: hostState(status.apps?.[key]) },
+      {
+        ...status.apps?.[key],
+        state: hostState(status.apps?.[key], pendingSet.has(key)),
+        pending_install: pendingSet.has(key),
+      },
     ]),
   )
   const managed = Object.values(hosts).some((host) => host.state === 'managed')
@@ -29,24 +37,40 @@ export function getOfficeUiState(status = {}) {
     .filter(([, host]) => host.state === 'conflict')
     .map(([key]) => key)
   const readiness = readinessReason(status)
-  const setupReason = readiness || (
-    conflicts.length
-      ? '检测到外部 Developer 注册冲突，请使用“修复冲突并配置”。'
-      : ''
-  )
+  const setupTargets = OFFICE_APP_KEYS.filter((key) => {
+    const host = hosts[key]
+    return !host.conflict && (host.official_installed || host.managed_installed)
+  })
+  const setupReason = readiness
+    || (conflicts.length
+      ? '检测到外部 Developer 注册冲突，请先修复冲突并配置。'
+      : setupTargets.length
+        ? ''
+        : '请先从 Microsoft Marketplace 安装至少一个 Office 插件。')
 
   return {
     hosts,
     conflicts,
+    install: Object.fromEntries(OFFICE_APP_KEYS.map((key) => {
+      const host = hosts[key]
+      return [key, {
+        visible: !host.official_installed && !host.managed_installed && !host.conflict,
+        disabled: Boolean(readiness) || host.pending_install,
+        url: host.marketplace_url || '',
+        label: host.pending_install ? '等待安装' : '从 Microsoft Marketplace 安装',
+      }]
+    })),
     setup: {
       disabled: Boolean(setupReason),
       reason: setupReason,
-      label: managed ? '重新配置' : '一键安装并配置',
+      targets: setupTargets,
+      label: managed ? '重新配置' : '连接 Gateway',
     },
     repair: {
       visible: conflicts.length > 0,
       disabled: Boolean(readiness),
       reason: readiness,
+      targets: conflicts,
       label: '修复冲突并配置',
     },
     remove: {

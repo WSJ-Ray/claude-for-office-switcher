@@ -37,6 +37,26 @@ class DesktopGatewayAppTests(unittest.TestCase):
         )
         self.tray = Mock()
 
+    @patch.object(desktop_launcher.webbrowser, "open", return_value=True)
+    def test_desktop_bridge_opens_only_marketplace_https_urls(self, open_browser):
+        url = "https://marketplace.microsoft.com/en-us/product/office/WA200010453"
+
+        self.assertTrue(desktop_launcher.DesktopBridge.open_external_url(url))
+        open_browser.assert_called_once_with(url, new=2)
+
+    @patch.object(desktop_launcher.webbrowser, "open")
+    def test_desktop_bridge_rejects_untrusted_external_urls(self, open_browser):
+        for url in (
+            "http://marketplace.microsoft.com/en-us/product/office/WA200010453",
+            "https://evil.example/en-us/product/office/WA200010453",
+            "https://marketplace.microsoft.com:8443/en-us/product/office/WA200010453",
+            "https://user:password@marketplace.microsoft.com/en-us/product/office/WA200010453",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(desktop_launcher.DesktopBridge.open_external_url(url))
+
+        open_browser.assert_not_called()
+
     @staticmethod
     def _window_with_native_handle(handle=0x1234):
         shown = ClosingEvent()
@@ -302,19 +322,27 @@ class DesktopGatewayAppTests(unittest.TestCase):
         exit_code = self.launcher.run()
 
         self.assertEqual(0, exit_code)
-        webview.create_window.assert_called_once_with(
-            "Office Gateway",
-            "http://127.0.0.1:4123/?desktop=1",
-            width=desktop_launcher.WINDOW_WIDTH,
-            height=desktop_launcher.WINDOW_HEIGHT,
-            x=205,
-            y=16,
-            resizable=True,
-            min_size=desktop_launcher.WINDOW_MIN_SIZE,
-            frameless=False,
-            easy_drag=False,
-            shadow=True,
-            background_color="#FFFFFF",
+        webview.create_window.assert_called_once()
+        create_args, create_kwargs = webview.create_window.call_args
+        self.assertEqual(
+            create_args,
+            ("Office Gateway", "http://127.0.0.1:4123/?desktop=1"),
+        )
+        self.assertIsInstance(create_kwargs.pop("js_api"), desktop_launcher.DesktopBridge)
+        self.assertEqual(
+            create_kwargs,
+            {
+                "width": desktop_launcher.WINDOW_WIDTH,
+                "height": desktop_launcher.WINDOW_HEIGHT,
+                "x": 205,
+                "y": 16,
+                "resizable": True,
+                "min_size": desktop_launcher.WINDOW_MIN_SIZE,
+                "frameless": False,
+                "easy_drag": False,
+                "shadow": True,
+                "background_color": "#FFFFFF",
+            },
         )
         webview.start.assert_called_once_with(
             gui="edgechromium",

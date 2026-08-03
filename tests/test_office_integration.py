@@ -305,6 +305,59 @@ class OfficeIntegrationTests(unittest.TestCase):
         self.assertEqual(EXCEL_STORE_ID, "wa200009404")
         self.assertEqual(EXCEL_MANIFEST_ID, "8ac3747c-fc92-4350-aaad-92159ff6f64a")
 
+    def test_status_exposes_official_marketplace_urls(self):
+        status = self.make_service().status()
+
+        self.assertEqual(
+            status["apps"]["word"]["marketplace_url"],
+            "https://marketplace.microsoft.com/en-us/product/office/WA200010453",
+        )
+        self.assertEqual(
+            status["apps"]["powerpoint"]["marketplace_url"],
+            "https://marketplace.microsoft.com/en-us/product/office/WA200010001",
+        )
+        self.assertEqual(
+            status["apps"]["excel"]["marketplace_url"],
+            "https://marketplace.microsoft.com/en-us/product/office/WA200009404",
+        )
+        self.assertNotIn("apps.microsoft.com", json.dumps(status))
+
+    def test_selective_setup_only_writes_requested_application(self):
+        self.install_office()
+        self.write_templates()
+
+        result = self.make_service().setup("bootstrap-secret", ["word"])
+
+        self.assertEqual(result["configured_apps"], ["word"])
+        self.assertTrue(
+            (self.data_dir / "office_addins" / "claude-word.xml").is_file()
+        )
+        self.assertFalse(
+            (self.data_dir / "office_addins" / "claude-powerpoint.xml").exists()
+        )
+        self.assertFalse(
+            (self.data_dir / "office_addins" / "claude-excel.xml").exists()
+        )
+        self.assertIn(
+            ("HKCU", DEVELOPER_REGISTRY_PATH, WORD_MANIFEST_ID),
+            self.registry.values,
+        )
+        self.assertNotIn(
+            ("HKCU", DEVELOPER_REGISTRY_PATH, POWERPOINT_MANIFEST_ID),
+            self.registry.values,
+        )
+        self.assertNotIn(
+            ("HKCU", DEVELOPER_REGISTRY_PATH, EXCEL_MANIFEST_ID),
+            self.registry.values,
+        )
+
+    def test_selective_setup_rejects_empty_or_unknown_application_selection(self):
+        for app_keys in ([], ["outlook"], ["word", "word"]):
+            with self.subTest(app_keys=app_keys):
+                with self.assertRaises(OfficeIntegrationError) as context:
+                    self.make_service()._select_specs(app_keys)
+                self.assertEqual(context.exception.code, "invalid_app_selection")
+
     def test_gateway_url_defaults_allows_loopback_and_requires_https_remotely(self):
         no_port_service = self.make_service(env={})
         self.assertEqual(no_port_service.gateway_url, "http://127.0.0.1:4000")
