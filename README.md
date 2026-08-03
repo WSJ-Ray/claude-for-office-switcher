@@ -135,7 +135,7 @@ Claude Office 插件只识别包含 `sonnet`、`opus`、`haiku` 的模型 ID，�
 
 ### 管理面板
 
-启动后访问 `http://localhost:4000/`（生产模式）或 `http://localhost:5173/`（开发模式），使用 `GATEWAY_TOKEN` 登录。
+启动后访问 `http://localhost:4000/`（生产模式）或 `http://localhost:5173/`（开发模式），即可直接进入本机管理面板。远程访问管理 API 仍需使用 `GATEWAY_TOKEN` 鉴权。
 
 #### 供应商管理
 - 添加/编辑/删除供应商
@@ -181,7 +181,7 @@ Claude Office 插件只识别包含 `sonnet`、`opus`、`haiku` 的模型 ID，�
 ├── web/                        # React 前端
 │   └── src/
 │       ├── pages/              # Dashboard, Providers, Mappings, Logs
-│       ├── components/         # Layout, ProviderForm, ThemeToggle, TokenGate
+│       ├── components/         # Layout, ProviderForm, ThemeToggle
 │       └── lib/                # API 请求、工具函数
 ├── static/                     # 前端构建产物
 ├── data/                       # SQLite 数据文件

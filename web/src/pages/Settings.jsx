@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -26,7 +25,6 @@ import {
   getSettings,
   repairOfficeConflicts,
   removeOffice,
-  setToken,
   setupOffice,
   updateSettings
 } from '../lib/api'
@@ -49,7 +47,6 @@ const STATUS_COPY = {
 /** 管理网关令牌和本机 Office 集成设置。 */
 export default function Settings() {
   const queryClient = useQueryClient()
-  const navigate = useNavigate()
   const [token, setTokenInput] = useState('')
   const [saved, setSaved] = useState(false)
   const [tokenError, setTokenError] = useState(null)
@@ -74,16 +71,10 @@ export default function Settings() {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['settings'] }),
-        queryClient.invalidateQueries({ queryKey: ['setup-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['auth-check'] }),
         queryClient.invalidateQueries({ queryKey: ['office-status'] })
       ])
       setSaved(true)
       setTokenError(null)
-      if (token) {
-        setToken(token)
-        navigate('/', { replace: true })
-      }
     },
     onError: (error) => setTokenError(error.message)
   })
@@ -137,7 +128,7 @@ export default function Settings() {
     <div className="flex h-full min-h-0 flex-col gap-3">
       <PageToolbar
         title="系统设置"
-        description="管理 Gateway 认证与本机 Office 集成。"
+        description="管理 Office Gateway 令牌与本机 Office 集成。"
         meta={configured ? 'Gateway Token 已配置' : '需要配置 Gateway Token'}
       />
 
@@ -145,7 +136,7 @@ export default function Settings() {
         <SettingsSection
           icon={KeyRound}
           title="Gateway Token"
-          description="用于管理面板和 Office Gateway 的访问认证。"
+          description="用于 Office Gateway 客户端的访问认证。"
           aside={<StatusBadge tone={configured ? 'success' : 'warning'}>{configured ? '已配置' : '未配置'}</StatusBadge>}
         >
           {settingsQuery.isError ? <ErrorBanner message={settingsQuery.error.message} retry={settingsQuery.refetch} /> : null}
@@ -153,7 +144,7 @@ export default function Settings() {
             <div className="grid grid-cols-[minmax(180px,0.8fr)_minmax(360px,1.2fr)] items-end gap-4">
               <div>
                 <label className="text-xs font-medium text-[var(--text-secondary)]" htmlFor="gateway-token">Token</label>
-                <p className="mt-1 text-[10px] leading-4 text-[var(--text-muted)]">保存新 Token 后，当前浏览器会立即使用它重新鉴权。</p>
+                <p className="mt-1 text-[10px] leading-4 text-[var(--text-muted)]">保存新 Token 后，Office 客户端需使用新令牌重新连接。</p>
               </div>
               <div className="flex items-center gap-2">
                 <input

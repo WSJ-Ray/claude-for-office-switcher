@@ -53,7 +53,7 @@ class StatsTrendTests(unittest.TestCase):
         self.assertEqual(month[-3]["count"], 1)
 
     def test_stats_endpoint_returns_the_selected_range(self):
-        with patch.object(admin, "verify_auth"):
+        with patch.object(admin, "verify_admin_auth"):
             payload = __import__("asyncio").run(admin.stats(None, range="7d"))
 
         self.assertEqual(len(payload["trend"]), 7)

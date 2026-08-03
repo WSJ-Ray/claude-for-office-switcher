@@ -93,7 +93,7 @@ export default function Providers() {
         <EmptyState
           icon={AlertTriangle}
           title="Provider 列表暂不可用"
-          description={providerQuery.error?.message || mappingsQuery.error?.message || '请检查管理令牌或后端服务。'}
+          description={providerQuery.error?.message || mappingsQuery.error?.message || '请检查后端服务后重试。'}
           action={(
             <button
               type="button"

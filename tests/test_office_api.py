@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app import db
 from app.office_integration import OfficeIntegrationError
-from app.routes import admin, office
+from app.routes import admin, office, proxy
 
 
 PIVOT_ORIGIN = "https://pivot.claude.ai"
@@ -60,6 +60,7 @@ class OfficeApiTests(unittest.TestCase):
         self.integration_patch.start()
 
         self.app = FastAPI()
+        self.app.include_router(proxy.router)
         self.app.include_router(office.router)
         self.app.include_router(admin.router)
         self.client = TestClient(self.app, client=("127.0.0.1", 51000))
@@ -109,20 +110,39 @@ class OfficeApiTests(unittest.TestCase):
         )
         self.service.status.assert_called_once_with()
 
-    def test_status_requires_auth_when_gateway_token_exists(self):
+    def test_local_status_does_not_require_auth_when_gateway_token_exists(self):
         self._set_gateway_token()
 
-        unauthenticated = self.client.get("/admin/office/status")
-        authenticated = self.client.get(
-            "/admin/office/status", headers=AUTH_HEADERS
-        )
+        response = self.client.get("/admin/office/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["local_access"])
+        self.assertTrue(response.json()["gateway_ready"])
+        self.service.status.assert_called_once_with()
+
+    def test_remote_status_requires_auth_when_gateway_token_exists(self):
+        self._set_gateway_token()
+
+        with TestClient(self.app, client=("192.0.2.10", 51001)) as remote_client:
+            unauthenticated = remote_client.get("/admin/office/status")
+            authenticated = remote_client.get(
+                "/admin/office/status", headers=AUTH_HEADERS
+            )
 
         self.assertEqual(unauthenticated.status_code, 401)
         self.assertEqual(unauthenticated.json(), {"detail": "Invalid token"})
         self.assertEqual(authenticated.status_code, 200)
-        self.assertTrue(authenticated.json()["local_access"])
-        self.assertTrue(authenticated.json()["gateway_ready"])
-        self.service.status.assert_called_once_with()
+        self.assertFalse(authenticated.json()["local_access"])
+
+    def test_gateway_api_still_requires_token_from_loopback(self):
+        self._set_gateway_token()
+
+        unauthenticated = self.client.get("/v1/models")
+        authenticated = self.client.get("/v1/models", headers=AUTH_HEADERS)
+
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertEqual(unauthenticated.json(), {"detail": "Invalid token"})
+        self.assertEqual(authenticated.status_code, 200)
 
     def test_status_marks_remote_clients_as_non_local(self):
         with TestClient(
@@ -179,17 +199,15 @@ class OfficeApiTests(unittest.TestCase):
         )
         self.service.repair_conflicts.assert_not_called()
 
-    def test_repair_requires_auth_when_gateway_token_exists(self):
+    def test_local_repair_does_not_require_auth_when_gateway_token_exists(self):
         self._set_gateway_token()
 
         response = self.client.post("/admin/office/conflicts/repair")
 
-        self.assertEqual(response.status_code, 401)
-        self.assertEqual(response.json(), {"detail": "Invalid token"})
-        self.assertIsNone(
-            db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
-        )
-        self.service.repair_conflicts.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        secret = db.get_setting(db.SETTING_OFFICE_BOOTSTRAP_SECRET)
+        self.assertTrue(secret)
+        self.service.repair_conflicts.assert_called_once_with(secret)
 
     def test_bootstrap_secret_is_stable_under_concurrent_creation(self):
         with ThreadPoolExecutor(max_workers=8) as executor:

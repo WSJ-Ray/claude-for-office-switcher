@@ -1,27 +1,11 @@
 import { getApiErrorMessage } from './office'
 
-const TOKEN_KEY = 'gateway_token'
-
-/** 读取浏览器中保存的网关令牌。 */
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || ''
-/** 将网关令牌保存到浏览器本地存储。 */
-export const setToken = (t) => localStorage.setItem(TOKEN_KEY, t)
-/** 从浏览器本地存储中删除网关令牌。 */
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY)
-
-/** 根据当前令牌生成兼容的鉴权请求头。 */
-const authHeaders = () => {
-  const t = getToken()
-  return t ? { 'x-api-key': t, Authorization: `Bearer ${t}` } : {}
-}
-
 /** 发送 JSON API 请求并将错误响应转换为带状态信息的 Error。 */
 const api = async (path, opts = {}) => {
   const r = await fetch(path, {
     ...opts,
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
       ...(opts.headers || {})
     }
   })
@@ -46,9 +30,6 @@ export const put = (p, body) => api(p, { method: 'PUT', body: JSON.stringify(bod
 export const del = (p) => api(p, { method: 'DELETE' })
 
 // ── 设置项 ────────────────────────────────────────────────────────
-
-/** 获取网关首次设置状态。 */
-export const getSetupStatus = () => api('/admin/setup-status')
 
 /** 获取已掩码的系统设置。 */
 export const getSettings = () => api('/admin/settings')

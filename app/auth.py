@@ -1,4 +1,6 @@
-from fastapi import Request, HTTPException
+import ipaddress
+
+from fastapi import HTTPException, Request
 from app import db
 
 
@@ -17,3 +19,14 @@ def verify_auth(request: Request) -> str:
     if req_token != token:
         raise HTTPException(status_code=401, detail="Invalid token")
     return req_token
+
+
+def verify_admin_auth(request: Request) -> str:
+    """Allow the local management client without weakening gateway API auth."""
+    if request.client is not None:
+        try:
+            if ipaddress.ip_address(request.client.host).is_loopback:
+                return ""
+        except ValueError:
+            pass
+    return verify_auth(request)

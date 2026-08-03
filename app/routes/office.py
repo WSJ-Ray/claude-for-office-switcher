@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .. import db
-from ..auth import verify_auth
+from ..auth import verify_admin_auth
 from ..office_integration import OfficeIntegration, OfficeIntegrationError
 
 
@@ -90,7 +90,7 @@ def _raise_office_error(error: Exception, headers=None) -> None:
 @router.get("/admin/office/status")
 def office_status(request: Request):
     """返回 Office 安装、加载项注册和网关就绪状态。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     try:
         status = dict(get_office_integration().status())
     except Exception as error:
@@ -103,7 +103,7 @@ def office_status(request: Request):
 @router.post("/admin/office/setup")
 def setup_office(request: Request):
     """为本机 Office 安装并注册受管加载项清单。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
     if not db.has_gateway_token():
@@ -119,7 +119,7 @@ def setup_office(request: Request):
 @router.post("/admin/office/conflicts/repair")
 def repair_office_conflicts(request: Request):
     """修复外部开发者注册冲突并重新安装受管加载项。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
     if not db.has_gateway_token():
@@ -135,7 +135,7 @@ def repair_office_conflicts(request: Request):
 @router.delete("/admin/office/setup")
 def remove_office(request: Request):
     """移除本机受管 Office 加载项注册和清单。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     if not _is_local_request(request):
         raise HTTPException(status_code=409, detail=dict(_LOCAL_ACCESS_DETAIL))
 

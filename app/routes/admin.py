@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 
 from .. import db
-from ..auth import verify_auth
+from ..auth import verify_admin_auth
 from ..cache import model_cache
 from ..schemas import (
     ProviderIn,
@@ -64,28 +64,28 @@ def _discovery_metadata() -> dict:
 @router.get("/provider-capabilities")
 async def provider_capabilities(request: Request):
     """返回运行时当前注册的提供商格式和能力。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     return {"data": list_provider_capabilities()}
 
 
 @router.get("/auth-check")
 async def auth_check(request: Request):
     """验证已保存的网关令牌且不修改服务状态。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     return {"ok": True}
 
 
 @router.get("/providers")
 async def list_providers(request: Request):
     """返回 API Key 已掩码的提供商列表。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     return {"data": [_mask_key(p) for p in db.list_providers()]}
 
 
 @router.post("/providers")
 async def create_provider(payload: ProviderIn, request: Request):
     """创建提供商，并在需要时设为唯一默认项。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     data = payload.model_dump()
     if data.get("is_default"):
         # 确保默认提供商唯一性（由更新流程中的 set_default 保证）
@@ -99,7 +99,7 @@ async def create_provider(payload: ProviderIn, request: Request):
 @router.put("/providers/{pid}")
 async def update_provider(pid: int, payload: ProviderUpdate, request: Request):
     """局部更新提供商并使其模型缓存失效。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not db.get_provider(pid):
         raise HTTPException(404, "Provider not found")
@@ -115,7 +115,7 @@ async def update_provider(pid: int, payload: ProviderUpdate, request: Request):
 @router.delete("/providers/{pid}")
 async def delete_provider(pid: int, request: Request):
     """删除提供商并清理对应模型缓存。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     db.delete_provider(pid)
     model_cache.invalidate(pid)
     return {"ok": True}
@@ -124,7 +124,7 @@ async def delete_provider(pid: int, request: Request):
 @router.post("/providers/{pid}/test")
 async def test_provider(pid: int, request: Request):
     """测试连通性：调用提供商的 list_models 端点验证连接。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     p = db.get_provider(pid)
     if not p:
         raise HTTPException(404, "Provider not found")
@@ -162,7 +162,7 @@ async def test_provider(pid: int, request: Request):
 @router.get("/providers/{pid}/models")
 async def provider_models(pid: int, request: Request):
     """拉取该提供商的上游模型 ID 列表，供模型映射页面快速选用。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     p = db.get_provider(pid)
     if not p:
         raise HTTPException(404, "Provider not found")
@@ -187,7 +187,7 @@ async def provider_models(pid: int, request: Request):
 @router.post("/providers/preview-models")
 async def preview_models(payload: PreviewModelsIn, request: Request):
     """使用草稿状态的提供商配置（尚未保存）解析上游模型列表。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     fmt = payload.format
     if fmt not in REGISTRY:
         raise HTTPException(400, f"Unsupported format: {fmt}")
@@ -236,7 +236,7 @@ async def preview_models(payload: PreviewModelsIn, request: Request):
 @router.get("/routes/preflight")
 async def route_preflight(client_model: str, request: Request):
     """在不调用上游的情况下解释客户端模型的实际路由决策。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     normalized_model = (client_model or "").strip()
     if not normalized_model:
         raise HTTPException(400, "client_model is required")
@@ -292,14 +292,14 @@ async def route_preflight(client_model: str, request: Request):
 @router.get("/mappings")
 async def list_mappings(request: Request):
     """返回全部模型映射及其当前可路由状态。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     return {"data": db.list_mappings()}
 
 
 @router.post("/mappings")
 async def create_mapping(payload: MappingIn, request: Request):
     """校验客户端模型名称并创建模型映射。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     cm = (payload.client_model or "").lower()
     if not any(t in cm for t in ("sonnet", "opus", "haiku")):
         raise HTTPException(400, "client_model 须包含 sonnet / opus / haiku 之一")
@@ -310,7 +310,7 @@ async def create_mapping(payload: MappingIn, request: Request):
 @router.put("/mappings/reorder")
 async def reorder_mappings(payload: MappingReorderIn, request: Request):
     """以原子方式设置一个客户端模型的完整优先级顺序。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     try:
         mappings = db.reorder_mappings(payload.client_model, payload.mapping_ids)
     except ValueError as exc:
@@ -321,7 +321,7 @@ async def reorder_mappings(payload: MappingReorderIn, request: Request):
 @router.put("/mappings/{mid}")
 async def update_mapping(mid: int, payload: MappingUpdate, request: Request):
     """校验并局部更新指定模型映射。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if "client_model" in data:
         cm = data["client_model"].lower()
@@ -334,7 +334,7 @@ async def update_mapping(mid: int, payload: MappingUpdate, request: Request):
 @router.delete("/mappings/{mid}")
 async def delete_mapping(mid: int, request: Request):
     """删除指定模型映射。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     db.delete_mapping(mid)
     return {"ok": True}
 
@@ -342,7 +342,7 @@ async def delete_mapping(mid: int, request: Request):
 @router.get("/stats")
 async def stats(request: Request, range: str = "24h"):
     """返回汇总、趋势和提供商维度的仪表盘统计。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     if range not in {"24h", "7d", "30d"}:
         raise HTTPException(422, "range must be one of: 24h, 7d, 30d")
     return {
@@ -362,7 +362,7 @@ async def stats(request: Request, range: str = "24h"):
 @router.get("/logs")
 async def logs(request: Request, limit: int = 100, offset: int = 0):
     """分页返回请求日志。"""
-    verify_auth(request)
+    verify_admin_auth(request)
     return {"data": db.list_logs(limit=min(limit, 500), offset=max(offset, 0))}
 
 
@@ -383,7 +383,7 @@ def _mask_setting(value: str) -> str:
 async def get_settings(request: Request):
     """读取系统设置（敏感字段掩码后返回）。"""
     if db.has_gateway_token():
-        verify_auth(request)
+        verify_admin_auth(request)
     all_settings = db.get_all_settings()
     return {
         "gateway_token": _mask_setting(all_settings.get(db.SETTING_GATEWAY_TOKEN, "")),
@@ -395,7 +395,7 @@ async def get_settings(request: Request):
 async def update_settings(payload: SettingsIn, request: Request):
     """更新系统设置。如果已有令牌，需要验证 auth；否则开放（首次设置阶段）。"""
     if db.has_gateway_token():
-        verify_auth(request)
+        verify_admin_auth(request)
     if payload.gateway_token:
         db.set_setting(db.SETTING_GATEWAY_TOKEN, payload.gateway_token)
     return {"ok": True}

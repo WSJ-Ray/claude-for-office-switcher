@@ -483,7 +483,7 @@ const DashboardUnavailable = ({ error, onRetry }) => (
   <EmptyState
     icon={AlertTriangle}
     title="监控数据暂不可用"
-    description={error?.message || '请检查网关服务和当前管理令牌后重新加载。'}
+    description={error?.message || '请检查网关服务后重新加载。'}
     action={(
       <button type="button" onClick={onRetry} className="h-8 rounded-[4px] bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-700 active:translate-y-px">
         重新加载

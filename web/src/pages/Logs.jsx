@@ -187,7 +187,7 @@ export default function Logs() {
         <EmptyState
           icon={AlertTriangle}
           title="请求日志暂不可用"
-          description={query.error?.message || '无法连接到网关。请确认服务正在运行且登录令牌有效。'}
+          description={query.error?.message || '无法连接到网关。请确认服务正在运行。'}
           action={<button type="button" onClick={() => void query.refetch()} className="desktop-button desktop-button-primary">重新加载</button>}
           className="flex-1"
         />
