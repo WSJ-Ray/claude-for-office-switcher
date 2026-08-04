@@ -8,6 +8,7 @@ import httpx
 from ._utils import model_list_urls
 from .base import BaseProvider
 from ..translation.responses import (
+    ResponsesTranslationError,
     anthropic_to_responses_request,
     responses_to_anthropic_response,
     responses_stream_to_anthropic_sse,
@@ -20,11 +21,36 @@ def _empty_usage() -> dict:
     return {"input_tokens": 0, "output_tokens": 0, "cache_w": 0, "cache_r": 0}
 
 
+def _translation_error_response(error: ResponsesTranslationError) -> tuple[bytes, str, dict, int]:
+    """将本地协议转换错误规范为 Anthropic 错误响应和日志元数据。"""
+    payload = {
+        "type": "error",
+        "error": {"type": error.error_type, "message": str(error)},
+    }
+    return (
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        "application/json",
+        {**_empty_usage(), "error": str(error), "error_type": error.error_type},
+        error.status_code,
+    )
+
+
+def _translation_error_sse(error: ResponsesTranslationError) -> tuple[bytes, dict]:
+    """将本地协议转换错误规范为 Anthropic 流式错误事件和元数据。"""
+    return _sse(
+        "error",
+        {
+            "type": "error",
+            "error": {"type": error.error_type, "message": str(error)},
+        },
+    ), {"status": error.status_code, "error": str(error), "error_type": error.error_type}
+
+
 class OpenAIResponsesAdapter(BaseProvider):
     format = "openai_responses"
 
-    def _headers(self) -> dict:
-        """构造 Responses API 的认证、组织和流式响应头。"""
+    def _headers(self, *, stream: bool) -> dict:
+        """构造 Responses API 的认证、组织和按请求类型匹配的 Accept 头。"""
         ua = (
             self.extra.get("user_agent")
             or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -34,7 +60,7 @@ class OpenAIResponsesAdapter(BaseProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "User-Agent": ua,
-            "Accept": "text/event-stream",
+            "Accept": "text/event-stream" if stream else "application/json",
             "Accept-Language": "en-US,en;q=0.9",
         }
         if self.extra.get("organization"):
@@ -45,9 +71,11 @@ class OpenAIResponsesAdapter(BaseProvider):
 
     def _model_headers(self) -> dict:
         """基于通用请求头构造模型发现所需的 JSON 响应头。"""
-        headers = self._headers()
-        headers["Accept"] = "application/json"
-        return headers
+        return self._headers(stream=False)
+
+    def _store_enabled(self) -> bool:
+        """读取 Provider 的 Responses 存储策略，缺省时保持启用。"""
+        return self.extra.get("store") is not False
 
     def _responses_url(self) -> str:
         """根据不同基础地址写法解析最终 Responses API 地址。"""
@@ -86,25 +114,37 @@ class OpenAIResponsesAdapter(BaseProvider):
 
     async def send(self, body: dict) -> tuple[bytes, str, dict, int]:
         """发送非流式 Responses 请求并转换为 Anthropic 响应。"""
-        responses_body = anthropic_to_responses_request({**body, "stream": False})
+        try:
+            responses_body = anthropic_to_responses_request(
+                {**body, "stream": False}, store=self._store_enabled()
+            )
+        except ResponsesTranslationError as error:
+            return _translation_error_response(error)
         payload = json.dumps(responses_body).encode("utf-8")
         model = body.get("model", "")
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 self._responses_url(),
                 content=payload,
-                headers=self._headers(),
+                headers=self._headers(stream=False),
             )
         ct = resp.headers.get("content-type", "application/json")
         if resp.status_code >= 400:
             err_text = resp.content[:500].decode("utf-8", "ignore")
-            return resp.content, ct, {**_empty_usage(), "error": err_text}, resp.status_code
+            return resp.content, ct, {
+                **_empty_usage(), "error": err_text, "error_type": "upstream_error"
+            }, resp.status_code
         try:
             responses_payload = resp.json()
         except Exception:
-            return resp.content, ct, _empty_usage(), resp.status_code
+            return resp.content, ct, {
+                **_empty_usage(), "error": "Responses API returned invalid JSON", "error_type": "upstream_error"
+            }, resp.status_code
 
-        anth = responses_to_anthropic_response(responses_payload, model)
+        try:
+            anth = responses_to_anthropic_response(responses_payload, model)
+        except ResponsesTranslationError as error:
+            return _translation_error_response(error)
         usage = anth.get("usage") or {}
         raw_usage = responses_payload.get("usage") or {}
         input_details = raw_usage.get("input_tokens_details") or {}
@@ -123,7 +163,13 @@ class OpenAIResponsesAdapter(BaseProvider):
 
     async def stream(self, body: dict) -> AsyncIterator[tuple[bytes, dict | None]]:
         """发送流式 Responses 请求并产出 Anthropic SSE 事件和最终用量。"""
-        responses_body = anthropic_to_responses_request({**body, "stream": True})
+        try:
+            responses_body = anthropic_to_responses_request(
+                {**body, "stream": True}, store=self._store_enabled()
+            )
+        except ResponsesTranslationError as error:
+            yield _translation_error_sse(error)
+            return
         payload = json.dumps(responses_body).encode("utf-8")
         model = body.get("model", "")
         t0 = time.time()
@@ -135,7 +181,7 @@ class OpenAIResponsesAdapter(BaseProvider):
                     "POST",
                     self._responses_url(),
                     content=payload,
-                    headers=self._headers(),
+                    headers=self._headers(stream=True),
                 ) as resp:
                     if resp.status_code >= 400:
                         err = await resp.aread()
@@ -176,7 +222,11 @@ class OpenAIResponsesAdapter(BaseProvider):
                             ), {"status": 502, "error": err_text}
                             return
 
-                        anth = responses_to_anthropic_response(responses_payload, model)
+                        try:
+                            anth = responses_to_anthropic_response(responses_payload, model)
+                        except ResponsesTranslationError as error:
+                            yield _translation_error_sse(error)
+                            return
                         usage = anth.get("usage") or {}
                         raw_usage = responses_payload.get("usage") or {}
                         input_details = raw_usage.get("input_tokens_details") or {}
@@ -274,6 +324,9 @@ class OpenAIResponsesAdapter(BaseProvider):
                             yield chunk, usage
                             return
                         yield chunk, None
+        except ResponsesTranslationError as error:
+            yield _translation_error_sse(error)
+            return
         except (
             httpx.ReadError,
             httpx.RemoteProtocolError,

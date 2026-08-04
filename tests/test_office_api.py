@@ -657,7 +657,7 @@ class OfficeApiTests(unittest.TestCase):
         sys.modules.pop("gateway", None)
         try:
             gateway = importlib.import_module("gateway")
-            route_paths = {route.path for route in gateway.app.routes}
+            route_paths = set(gateway.app.openapi()["paths"])
             with TestClient(
                 gateway.app, client=("127.0.0.1", 51003)
             ) as gateway_client:

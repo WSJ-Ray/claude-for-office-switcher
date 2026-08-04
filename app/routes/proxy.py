@@ -123,6 +123,7 @@ async def _proxy_nonstream(body, client_model, cands, t0):
     """依次尝试非流式候选上游，记录首个成功响应或最终失败。"""
     last_status = 502
     last_err = "all candidates failed"
+    last_error_type = "upstream_error"
     last_provider = cands[-1][0]
     last_upstream = cands[-1][1]
     for idx, (provider, upstream_model) in enumerate(cands):
@@ -141,12 +142,18 @@ async def _proxy_nonstream(body, client_model, cands, t0):
             _log(f"[FAIL] {provider['name']}/{upstream_model} 异常: {e}")
             last_err = str(e)[:200]
             last_status = 502
+            last_error_type = "upstream_error"
             last_provider, last_upstream = provider, upstream_model
             continue
         if status >= 400:
             _log(f"[FAIL] {provider['name']}/{upstream_model} HTTP {status}")
             last_status = status
             last_err = (usage.get("error") if isinstance(usage, dict) else "") or f"HTTP {status}"
+            last_error_type = (
+                usage.get("error_type", "upstream_error")
+                if isinstance(usage, dict)
+                else "upstream_error"
+            )
             last_provider, last_upstream = provider, upstream_model
             continue
         # 成功：返回响应
@@ -178,7 +185,7 @@ async def _proxy_nonstream(body, client_model, cands, t0):
         }
     )
     return Response(
-        content=json.dumps({"type": "error", "error": {"type": "upstream_error", "message": last_err}}).encode("utf-8"),
+        content=json.dumps({"type": "error", "error": {"type": last_error_type, "message": last_err}}).encode("utf-8"),
         status_code=last_status,
         media_type="application/json",
     )

@@ -69,7 +69,7 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         """返回网关存活状态和版本。"""
-        return {"ok": True, "version": "3.0"}
+        return {"ok": True, "version": "1.1.0"}
 
     if STATIC_DIR.exists():
         assets = STATIC_DIR / "assets"

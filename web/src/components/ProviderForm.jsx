@@ -8,7 +8,7 @@ import { Dialog, IconButton, InlineNotice, Spinner, StatusBadge } from './ui'
 const FALLBACK_FORMATS = [
   { format: 'anthropic', label: 'Anthropic Messages', description: 'Anthropic Messages API compatible endpoint.', base_url_placeholder: 'https://api.deepseek.com/anthropic', extra_config_fields: [] },
   { format: 'openai_chat', label: 'OpenAI Chat Completions', description: 'OpenAI Chat Completions translated to Anthropic Messages.', base_url_placeholder: 'https://api.openai.com/v1', extra_config_fields: [] },
-  { format: 'openai_responses', label: 'OpenAI Responses', description: 'OpenAI Responses translated to Anthropic Messages.', base_url_placeholder: 'https://api.openai.com/v1', extra_config_fields: [] },
+  { format: 'openai_responses', label: 'OpenAI Responses', description: 'OpenAI Responses translated to Anthropic Messages.', base_url_placeholder: 'https://api.openai.com/v1', extra_config_fields: [{ key: 'store', label: 'Store responses upstream', type: 'boolean', default: true }] },
   { format: 'url_adaptive', label: 'Adaptive Anthropic URL', description: 'Anthropic-compatible endpoint with flexible URL input.', base_url_placeholder: 'https://gateway.example.com/v1/anthropic', extra_config_fields: [] }
 ]
 

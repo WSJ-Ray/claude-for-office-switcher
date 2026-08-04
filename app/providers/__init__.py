@@ -83,6 +83,12 @@ _CAPABILITY_METADATA: dict[str, dict] = {
         },
         "extra_config_fields": [
             {
+                "key": "store",
+                "label": "Store responses upstream",
+                "type": "boolean",
+                "default": True,
+            },
+            {
                 "key": "organization",
                 "label": "OpenAI organization",
                 "type": "string",

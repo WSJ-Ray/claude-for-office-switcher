@@ -1,5 +1,7 @@
 # Claude for Office Switcher
 
+当前版本：`v1.1.0`
+
 多供应商 LLM 网关，让 Claude Office 插件（Excel/Word/PowerPoint/Outlook）接入多种大语言模型供应商，包括 DeepSeek、Moonshot、OpenAI 兼容接口等。
 
 ## 工作原理
@@ -33,7 +35,7 @@
 
 - **多供应商支持** — DeepSeek（原生 Anthropic API）、Moonshot、OpenAI 兼容接口等
 - **自动故障转移** — 按优先级依次尝试供应商，失败自动切换
-- **格式自动转换** — Anthropic ↔ OpenAI Chat Completions 双向翻译
+- **格式自动转换** — Anthropic ↔ OpenAI Chat Completions / Responses 双向翻译
 - **流式 SSE 转发** — 真正的流式响应，避免超时
 - **管理面板** — 网页仪表盘，管理供应商、模型映射、查看日志和统计
 
@@ -120,6 +122,8 @@ cd web && npm run build
 | Moonshot | Anthropic Messages | `AnthropicAdapter` | 兼容接口 |
 | OpenAI | Chat Completions | `OpenAIChatAdapter` | 自动格式转换 |
 | OpenAI 兼容 | Chat Completions | `OpenAIChatAdapter` | 任意兼容接口 |
+| OpenAI | Responses | `OpenAIResponsesAdapter` | 支持文本、图片、文档与函数工具转换 |
+| OpenAI 兼容 | Responses | `OpenAIResponsesAdapter` | 自动解析 `/responses` 路径 |
 
 ## 模型映射
 
@@ -154,6 +158,27 @@ Claude Office 插件只识别包含 `sonnet`、`opus`、`haiku` 的模型 ID，�
 - 配置 base_url、API Key、超时时间
 - 设置默认供应商
 
+#### OpenAI Responses 配置
+
+在新增 Provider 时选择 **OpenAI Responses**，Base URL 可填写 API 根地址或以 `/v1` 结尾的地址，例如 `https://api.openai.com/v1`。网关会自动请求 `/responses`，模型发现仍使用兼容的模型列表端点。
+
+Responses Provider 的高级配置支持：
+
+- **Store responses upstream**：默认开启，对应 OpenAI `store: true`。关闭后每个请求发送 `store: false`。
+- **OpenAI organization / project**：可选的组织和项目请求头。
+- **Custom User-Agent**：兼容需要定制请求头的上游服务。
+
+转换范围如下：
+
+| Anthropic 输入 | Responses 转换 |
+|---------------|----------------|
+| system、文本 | `instructions`、`input_text` |
+| Base64 或 URL 图片 | `input_image` |
+| Base64、URL、文本或嵌入内容文档 | `input_file` 或内嵌输入内容 |
+| 函数工具、工具调用、工具结果 | function tool、`function_call`、`function_call_output` |
+
+网关只向 Anthropic 客户端返回标准可表示的文本、拒答文本和函数工具调用；Responses reasoning 内容不会暴露给客户端。`thinking`、服务端工具结果、`stop_sequences`，以及图像生成等无法表示的上游输出会返回明确错误，不会被静默忽略。
+
 #### 模型映射
 - 添加客户端模型 ↔ 上游模型映射
 - 设置优先级（故障转移顺序）
@@ -183,13 +208,15 @@ Claude Office 插件只识别包含 `sonnet`、`opus`、`haiku` 的模型 ID，�
 │   │   ├── base.py             # 抽象接口
 │   │   ├── anthropic.py        # Anthropic API 适配器
 │   │   ├── openai_chat.py      # OpenAI Chat 适配器
+│   │   ├── openai_responses.py # OpenAI Responses 适配器
 │   │   └── url_adaptive.py     # URL 自适应适配器
 │   ├── routes/
 │   │   ├── proxy.py            # /v1/* 代理路由
 │   │   └── admin.py            # /admin/* 管理路由
 │   └── translation/
 │       ├── __init__.py         # Anthropic → OpenAI 请求转换
-│       └── o2a.py              # OpenAI → Anthropic 响应转换
+│       ├── o2a.py              # OpenAI → Anthropic 响应转换
+│       └── responses.py         # Anthropic ↔ OpenAI Responses 转换
 ├── web/                        # React 前端
 │   └── src/
 │       ├── pages/              # Dashboard, Providers, Mappings, Logs
@@ -237,9 +264,6 @@ A: 检查网络连接和供应商 API 可用性，可在管理面板减小超时
 A: 在管理面板的"供应商管理"中添加，选择对应的 API 格式，然后配置模型映射。
 
 ## 未来开发方向
-
-### ~~P1 — OpenAI Responses API 支持~~
-~~适配 OpenAI 最新的 [Responses API](https://platform.openai.com/docs/api-reference/responses)，在现有 Chat Completions 转换器之外增加新的适配器，使网关能够将 Anthropic 格式请求转发到 OpenAI 的 Responses 端点并正确转换响应。~~
 
 ### ~~P2 — 客户端桌面应用~~
 ~~将网关打包为跨平台桌面客户端（Electron / Tauri），集成内嵌浏览器与 Office 插件配置向导，实现零命令行的一键启动体验。用户无需安装 Python、Node.js 或 Docker，下载即用。~~
